@@ -2,7 +2,11 @@ import React, { useMemo, useState } from "react";
 import { Check, ChevronRight, XCircle } from "lucide-react";
 
 import { ChatThinkingCard } from "./ChatThinkingCard";
-import { LiveActionCard, type ActionInfo } from "./LiveActionCard";
+import {
+  LiveActionCard,
+  settleActions,
+  type ActionInfo,
+} from "./LiveActionCard";
 import { formatDuration } from "@/lib/chat-display";
 
 interface ChatOperationSummaryProps {
@@ -16,11 +20,15 @@ export const ChatOperationSummary: React.FC<ChatOperationSummaryProps> = ({
   reasoning,
 }) => {
   const [open, setOpen] = useState(false);
+  // A collapsed summary is by definition a finished turn: settle any stale
+  // running status so nothing inside it can animate again.
+  const settledActions = useMemo(() => settleActions(actions), [actions]);
   const total = useMemo(
-    () => actions.reduce((sum, action) => sum + (action.durationMs || 0), 0),
-    [actions],
+    () =>
+      settledActions.reduce((sum, action) => sum + (action.durationMs || 0), 0),
+    [settledActions],
   );
-  const hasError = actions.some((action) => action.isError);
+  const hasError = settledActions.some((action) => action.isError);
 
   if (actions.length === 0 && !reasoning) return null;
 
@@ -38,7 +46,7 @@ export const ChatOperationSummary: React.FC<ChatOperationSummaryProps> = ({
           <Check className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
         )}
         <span className="font-medium">
-          {actions.length} operasi
+          {settledActions.length} operasi
         </span>
         {total > 0 && (
           <span className="font-mono text-[10px] tabular-nums text-[var(--vc-muted-fg)]">
@@ -55,7 +63,7 @@ export const ChatOperationSummary: React.FC<ChatOperationSummaryProps> = ({
       {open && (
         <div className="mt-0.5 space-y-0.5 pl-1">
           {reasoning && <ChatThinkingCard reasoning={reasoning} />}
-          {actions.map((action) => (
+          {settledActions.map((action) => (
             <LiveActionCard key={action.id} action={action} />
           ))}
         </div>

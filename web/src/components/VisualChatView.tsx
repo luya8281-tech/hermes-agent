@@ -23,28 +23,35 @@ import {
   Paperclip,
   X,
   PanelRight,
+  FileText,
 } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
+  ATTACH_ACCEPT,
   extractImagePaths,
   extractMarkdownImageSources,
+  fileExtension,
   formatDuration,
   formatToolOutput,
   formatToolSubject,
+  isDocFileName,
+  isImageFileName,
   isToolResultError,
-  splitUserImages,
+  splitUserAttachments,
 } from "@/lib/chat-display";
-import {
-  imageFilesFromTransfer,
-  transferMayContainImage,
-  uploadChatImage,
-} from "@/lib/chatImagePaste";
+import { uploadChatImage } from "@/lib/chatImagePaste";
+import { uploadChatFile } from "@/lib/chatFileUpload";
 import { ChatOperationSummary } from "./ChatOperationSummary";
 import { ChatThinkingCard } from "./ChatThinkingCard";
-import { LiveActionCard, VeeSpinner, type ActionInfo } from "./LiveActionCard";
+import {
+  LiveActionCard,
+  VeeSpinner,
+  settleActions,
+  type ActionInfo,
+} from "./LiveActionCard";
 import { ManagedImage } from "./ManagedImage";
 import { Markdown } from "./Markdown";
 
@@ -222,7 +229,7 @@ const CopyMessageButton: React.FC<{ text: string }> = ({ text }) => {
 };
 
 const UserMessage: React.FC<{ message: ChatMessage }> = ({ message }) => {
-  const { text, images } = splitUserImages(message.content);
+  const { text, images, files } = splitUserAttachments(message.content);
   return (
     <div className="vc-msg flex w-full justify-center px-2 py-2.5 transition-colors sm:px-4">
       <div className="flex w-full max-w-4xl flex-col items-end">
@@ -240,6 +247,23 @@ const UserMessage: React.FC<{ message: ChatMessage }> = ({ message }) => {
                 alt={image.alt}
                 explicit
               />
+            ))}
+          </div>
+        )}
+        {files.length > 0 && (
+          <div className="mt-1.5 flex w-full max-w-[85%] flex-col items-end gap-1.5 sm:max-w-md">
+            {files.map((file) => (
+              <span
+                key={file.src}
+                className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-secondary)] px-2.5 py-1.5 font-sans text-[12px] text-[var(--vc-fg)]"
+                title={file.src}
+              >
+                <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--vc-muted-fg)]" />
+                <span className="min-w-0 truncate">{file.name}</span>
+                <span className="shrink-0 font-mono text-[10px] uppercase text-[var(--vc-muted-fg)]">
+                  {fileExtension(file.name)}
+                </span>
+              </span>
             ))}
           </div>
         )}
@@ -383,16 +407,48 @@ function sessionShort(model: string): string {
   return model.length > 34 ? `${model.slice(0, 31)}…` : model;
 }
 
-interface PendingImage {
+interface PendingAttachment {
   id: string;
-  previewUrl: string;
+  kind: "image" | "file";
   name: string;
+  size: number;
+  previewUrl?: string;
   status: "uploading" | "ready" | "error";
   path?: string;
   error?: string;
 }
 
-const MAX_PENDING_IMAGES = 4;
+const MAX_PENDING_ATTACHMENTS = 4;
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Pull every dropped/pasted file out of a DataTransfer (deduped). */
+function attachableFilesFromTransfer(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const files: File[] = [];
+  const seen = new Set<string>();
+  const add = (file: File | null) => {
+    if (!file) return;
+    const key = `${file.name}\0${file.type}\0${file.size}\0${file.lastModified}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push(file);
+  };
+  if (data.items?.length) {
+    for (let i = 0; i < data.items.length; i++) {
+      const item = data.items[i];
+      if (item.kind === "file") add(item.getAsFile());
+    }
+  }
+  if (data.files?.length) {
+    for (let i = 0; i < data.files.length; i++) add(data.files[i]);
+  }
+  return files;
+}
 
 export const VisualChatView: React.FC<VisualChatViewProps> = ({
   scopedProfile,
@@ -411,7 +467,9 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
   const [model, setModel] = useState("");
   const [title, setTitle] = useState("");
   const [showJump, setShowJump] = useState(false);
-  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [pendingAttachments, setPendingAttachments] = useState<
+    PendingAttachment[]
+  >([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -607,7 +665,19 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
       assistantIdRef.current = assistantId;
 
       setMessages((previous) => [
-        ...previous,
+        // A new turn settles every earlier response: no spinner/shimmer from
+        // a previous turn may run again once the next response starts.
+        ...previous.map((message) =>
+          message.role === "assistant"
+            ? {
+                ...message,
+                isStreaming: false,
+                actions: message.actions
+                  ? settleActions(message.actions)
+                  : message.actions,
+              }
+            : message,
+        ),
         {
           id: `usr_${now}`,
           role: "user",
@@ -785,6 +855,9 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
               ...message,
               content,
               isStreaming: false,
+              actions: message.actions
+                ? settleActions(message.actions)
+                : message.actions,
               latencyMs: message.startedAt
                 ? Date.now() - message.startedAt
                 : undefined,
@@ -834,6 +907,9 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
         updateAssistant((message) => ({
           ...message,
           isStreaming: false,
+          actions: message.actions
+            ? settleActions(message.actions)
+            : message.actions,
           error: text,
         }));
       }
@@ -856,6 +932,9 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
         updateAssistant((message) => ({
           ...message,
           isStreaming: false,
+          actions: message.actions
+            ? settleActions(message.actions)
+            : message.actions,
           error: frame.error?.message || "Permintaan gagal diproses.",
         }));
       }
@@ -996,54 +1075,87 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
     setShowJump(!atBottom);
   }, []);
 
-  const removePendingImage = useCallback((id: string) => {
-    setPendingImages((previous) => {
+  const removePendingAttachment = useCallback((id: string) => {
+    setPendingAttachments((previous) => {
       const removed = previous.find((item) => item.id === id);
-      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
       return previous.filter((item) => item.id !== id);
     });
   }, []);
 
-  const clearPendingImages = useCallback(() => {
-    setPendingImages((previous) => {
-      previous.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+  const clearPendingAttachments = useCallback(() => {
+    setPendingAttachments((previous) => {
+      previous.forEach((item) => {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      });
       return [];
     });
   }, []);
 
-  const addImageFiles = useCallback(
+  const addAttachFiles = useCallback(
     (files: File[]) => {
-      const fresh = files.filter((file) => file.type.startsWith("image/"));
-      if (!fresh.length) return;
-      const room = Math.max(0, MAX_PENDING_IMAGES - pendingImages.length);
-      const picked = fresh.slice(0, room);
+      if (!files.length) return;
+      const room = Math.max(
+        0,
+        MAX_PENDING_ATTACHMENTS - pendingAttachments.length,
+      );
+      const picked = files.slice(0, room);
       if (!picked.length) return;
       const profile = scopedProfileRef.current || "";
-      const items: PendingImage[] = picked.map((file) => ({
-        id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        previewUrl: URL.createObjectURL(file),
-        name: file.name || "foto",
-        status: "uploading",
-      }));
-      setPendingImages((previous) => [...previous, ...items]);
+      const items: PendingAttachment[] = picked.map((file) => {
+        const id = `att_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const isImage =
+          file.type.startsWith("image/") || isImageFileName(file.name);
+        if (!isImage && !isDocFileName(file.name)) {
+          return {
+            id,
+            kind: "file" as const,
+            name: file.name || "file",
+            size: file.size,
+            status: "error" as const,
+            error: "Format tidak didukung",
+          };
+        }
+        return {
+          id,
+          kind: isImage ? ("image" as const) : ("file" as const),
+          name: file.name || (isImage ? "foto" : "file"),
+          size: file.size,
+          previewUrl: isImage ? URL.createObjectURL(file) : undefined,
+          status: "uploading" as const,
+        };
+      });
+      setPendingAttachments((previous) => [...previous, ...items]);
       items.forEach((item, index) => {
-        void uploadChatImage(picked[index], profile)
-          .then((uploaded) => {
-            setPendingImages((current) =>
+        if (item.status === "error") return;
+        const file = picked[index];
+        const uploaded =
+          item.kind === "image"
+            ? uploadChatImage(file, profile).then((result) => ({
+                path: result.path,
+                name: result.name,
+              }))
+            : uploadChatFile(file).then((result) => ({
+                path: result.path,
+                name: result.name,
+              }));
+        void uploaded
+          .then((result) => {
+            setPendingAttachments((current) =>
               current.map((entry) =>
                 entry.id === item.id
                   ? {
                       ...entry,
                       status: "ready",
-                      path: uploaded.path,
-                      name: uploaded.name,
+                      path: result.path,
+                      name: result.name,
                     }
                   : entry,
               ),
             );
           })
           .catch((err: unknown) => {
-            setPendingImages((current) =>
+            setPendingAttachments((current) =>
               current.map((entry) =>
                 entry.id === item.id
                   ? {
@@ -1058,24 +1170,27 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
           });
       });
     },
-    [pendingImages.length],
+    [pendingAttachments.length],
   );
 
   const handleSend = useCallback(() => {
     const text = input.trim();
-    const ready = pendingImages.filter(
+    const ready = pendingAttachments.filter(
       (item) => item.status === "ready" && item.path,
     );
-    const uploading = pendingImages.some(
+    const uploading = pendingAttachments.some(
       (item) => item.status === "uploading",
     );
     if ((!text && !ready.length) || isGenerating || uploading) return;
-    // Attached photos travel as markdown image lines: the agent receives the
-    // server path, and the user's own bubble renders the photo inline.
-    const lines = ready.map((item) => `![${item.name}](${item.path})`);
+    // Attachments travel as path lines: photos as markdown image lines, files
+    // as bare server paths. The agent receives the path, and the user's own
+    // bubble renders the photo inline / the file as a chip.
+    const lines = ready.map((item) =>
+      item.kind === "image" ? `![${item.name}](${item.path})` : item.path!,
+    );
     const fullText = [text, ...lines].filter(Boolean).join("\n");
     setInput("");
-    clearPendingImages();
+    clearPendingAttachments();
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -1084,7 +1199,13 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
       return;
     }
     submitPrompt(fullText);
-  }, [input, isGenerating, pendingImages, submitPrompt, clearPendingImages]);
+  }, [
+    input,
+    isGenerating,
+    pendingAttachments,
+    submitPrompt,
+    clearPendingAttachments,
+  ]);
 
   const handleStop = useCallback(() => {
     const sessionId = liveSessionIdRef.current;
@@ -1094,7 +1215,13 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
     setMessages((previous) =>
       previous.map((message) =>
         message.id === assistantIdRef.current
-          ? { ...message, isStreaming: false }
+          ? {
+              ...message,
+              isStreaming: false,
+              actions: message.actions
+                ? settleActions(message.actions)
+                : message.actions,
+            }
           : message,
       ),
     );
@@ -1108,10 +1235,10 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
     }
     loadedResumeRef.current = null;
     activeStoredIdRef.current = null;
-    clearPendingImages();
+    clearPendingAttachments();
     beginSession(null);
     onNewChat?.();
-  }, [beginSession, onNewChat, sendRequest, clearPendingImages]);
+  }, [beginSession, onNewChat, sendRequest, clearPendingAttachments]);
 
   const handleRetryLoad = useCallback(() => {
     beginSession(loadedResumeRef.current ?? null);
@@ -1358,63 +1485,104 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
               handleSend();
             }}
             onPaste={(event) => {
-              const files = imageFilesFromTransfer(event.clipboardData);
+              const files = attachableFilesFromTransfer(event.clipboardData);
               if (files.length) {
                 event.preventDefault();
-                addImageFiles(files);
+                addAttachFiles(files);
               }
             }}
             onDragOver={(event) => {
-              if (transferMayContainImage(event.dataTransfer)) {
+              if (event.dataTransfer?.types?.includes("Files")) {
                 event.preventDefault();
               }
             }}
             onDrop={(event) => {
-              const files = imageFilesFromTransfer(event.dataTransfer);
+              const files = attachableFilesFromTransfer(event.dataTransfer);
               if (files.length) {
                 event.preventDefault();
-                addImageFiles(files);
+                addAttachFiles(files);
               }
             }}
           >
-            {pendingImages.length > 0 && (
-              <div className="flex flex-wrap gap-2 px-3.5 pt-2.5">
-                {pendingImages.map((item) => (
-                  <div
-                    key={item.id}
-                    className="relative h-14 w-14 shrink-0"
-                    title={
-                      item.status === "error" ? item.error : item.name
-                    }
-                  >
-                    <img
-                      src={item.previewUrl}
-                      alt={item.name}
-                      className={`h-14 w-14 rounded-lg border border-[var(--vc-border)] object-cover ${
-                        item.status === "uploading" ? "opacity-50" : ""
-                      }`}
-                    />
-                    {item.status === "uploading" && (
-                      <span className="absolute inset-0 flex items-center justify-center">
-                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--vc-muted-fg)] border-t-transparent" />
-                      </span>
-                    )}
-                    {item.status === "error" && (
-                      <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-red-500/20 font-sans text-[9px] font-medium text-red-400">
-                        Gagal
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => removePendingImage(item.id)}
-                      className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--vc-secondary)] text-[var(--vc-fg)] shadow"
-                      title="Hapus lampiran"
-                      aria-label="Hapus lampiran"
+            {pendingAttachments.length > 0 && (
+              <div className="flex flex-wrap items-start gap-2 px-3.5 pt-2.5">
+                {pendingAttachments.map((item) =>
+                  item.kind === "image" ? (
+                    <div
+                      key={item.id}
+                      className="relative h-14 w-14 shrink-0"
+                      title={item.status === "error" ? item.error : item.name}
                     >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
+                      {item.previewUrl && (
+                        <img
+                          src={item.previewUrl}
+                          alt={item.name}
+                          className={`h-14 w-14 rounded-lg border border-[var(--vc-border)] object-cover ${
+                            item.status === "uploading" ? "opacity-50" : ""
+                          }`}
+                        />
+                      )}
+                      {item.status === "uploading" && (
+                        <span className="absolute inset-0 flex items-center justify-center">
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--vc-muted-fg)] border-t-transparent" />
+                        </span>
+                      )}
+                      {item.status === "error" && (
+                        <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-red-500/20 font-sans text-[9px] font-medium text-red-400">
+                          Gagal
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removePendingAttachment(item.id)}
+                        className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--vc-secondary)] text-[var(--vc-fg)] shadow"
+                        title="Hapus lampiran"
+                        aria-label="Hapus lampiran"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div
+                      key={item.id}
+                      className="relative flex h-14 max-w-[16rem] min-w-0 items-center gap-2 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-secondary)] px-2.5"
+                      title={item.status === "error" ? item.error : item.name}
+                    >
+                      {item.status === "uploading" ? (
+                        <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-[var(--vc-muted-fg)] border-t-transparent" />
+                      ) : (
+                        <FileText className="h-4 w-4 shrink-0 text-[var(--vc-muted-fg)]" />
+                      )}
+                      <div className="min-w-0 font-sans">
+                        <div className="truncate text-[12px] leading-tight text-[var(--vc-fg)]">
+                          {item.name}
+                        </div>
+                        <div
+                          className={`text-[10px] leading-tight ${
+                            item.status === "error"
+                              ? "text-red-400"
+                              : "text-[var(--vc-muted-fg)]"
+                          }`}
+                        >
+                          {item.status === "error"
+                            ? (item.error ?? "Gagal")
+                            : item.status === "uploading"
+                              ? "Mengunggah…"
+                              : formatAttachmentSize(item.size)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removePendingAttachment(item.id)}
+                        className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--vc-card)] text-[var(--vc-fg)] shadow"
+                        title="Hapus lampiran"
+                        aria-label="Hapus lampiran"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ),
+                )}
               </div>
             )}
             <div className="px-3.5 pb-1 pt-2.5">
@@ -1434,13 +1602,13 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept={ATTACH_ACCEPT}
                   multiple
                   className="hidden"
                   aria-hidden="true"
                   tabIndex={-1}
                   onChange={(event) => {
-                    addImageFiles(Array.from(event.target.files ?? []));
+                    addAttachFiles(Array.from(event.target.files ?? []));
                     event.target.value = "";
                   }}
                 />
@@ -1448,8 +1616,8 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--vc-muted-fg)] transition-colors hover:bg-white/[0.05] hover:text-[var(--vc-fg)]"
-                  title="Lampirkan foto"
-                  aria-label="Lampirkan foto"
+                  title="Lampirkan foto atau file"
+                  aria-label="Lampirkan foto atau file"
                 >
                   <Paperclip className="h-4 w-4" />
                 </button>
@@ -1488,10 +1656,12 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
                     type="submit"
                     disabled={
                       (!input.trim() &&
-                        !pendingImages.some(
+                        !pendingAttachments.some(
                           (item) => item.status === "ready",
                         )) ||
-                      pendingImages.some((item) => item.status === "uploading")
+                      pendingAttachments.some(
+                        (item) => item.status === "uploading",
+                      )
                     }
                     className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--vc-primary)] text-white transition-colors hover:bg-[var(--vc-primary-hover)] disabled:pointer-events-none disabled:opacity-30"
                     title="Kirim pesan"

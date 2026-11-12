@@ -136,7 +136,7 @@ export function formatToolOutput(result: unknown): string {
   }
 }
 
-const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "avif", "bmp"];
+export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "avif", "bmp"];
 
 function stripFencedCode(text: string): string {
   return (text || "").replace(/```[\s\S]*?```/g, "");
@@ -173,21 +173,77 @@ export function extractMarkdownImageSources(text: string): string[] {
   return out;
 }
 
+export const DOC_EXTENSIONS = [
+  "txt",
+  "md",
+  "markdown",
+  "doc",
+  "docx",
+  "odt",
+  "pdf",
+  "csv",
+  "tsv",
+  "json",
+  "jsonl",
+  "xml",
+  "yaml",
+  "yml",
+  "log",
+  "rtf",
+  "xls",
+  "xlsx",
+  "ods",
+  "ppt",
+  "pptx",
+  "odp",
+  "html",
+  "htm",
+  "zip",
+  "gz",
+  "tar",
+];
+/** accept= value for the composer file picker: images + documents. */
+export const ATTACH_ACCEPT = [
+  "image/*",
+  ...DOC_EXTENSIONS.map((ext) => `.${ext}`),
+].join(",");
+
+export function fileExtension(name: string): string {
+  const base = (name || "").split("/").pop() || "";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+}
+
+export function isImageFileName(name: string): boolean {
+  return IMAGE_EXTENSIONS.includes(fileExtension(name));
+}
+
+export function isDocFileName(name: string): boolean {
+  return DOC_EXTENSIONS.includes(fileExtension(name));
+}
+
 export interface UserImageAttachment {
   alt: string;
   src: string;
 }
 
-/** Split whole-line image references out of a user message: markdown image
- * lines and bare absolute image paths render as photos below the bubble
- * instead of raw text. Anything else stays untouched. */
-export function splitUserImages(text: string): {
+export interface UserFileAttachment {
+  name: string;
+  src: string;
+}
+
+/** Split whole-line attachment references out of a user message: markdown
+ * image lines and bare absolute image/document paths render as photos or
+ * file chips below the bubble instead of raw text. Anything else stays. */
+export function splitUserAttachments(text: string): {
   text: string;
   images: UserImageAttachment[];
+  files: UserFileAttachment[];
 } {
   const lines = (text || "").split("\n");
   const kept: string[] = [];
   const images: UserImageAttachment[] = [];
+  const files: UserFileAttachment[] = [];
   for (const line of lines) {
     const trimmed = line.trim();
     const md = trimmed.match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/);
@@ -195,17 +251,19 @@ export function splitUserImages(text: string): {
       images.push({ alt: md[1], src: md[2] });
       continue;
     }
-    if (
-      /^\/(?:[\w.@%+~=-]+\/)*[\w.@%+~=-]+\.(?:png|jpg|jpeg|webp|gif|avif|bmp)$/i.test(
-        trimmed,
-      )
-    ) {
-      images.push({ alt: trimmed.split("/").pop() || "Gambar", src: trimmed });
-      continue;
+    if (/^\/(?:[\w.@%+~=-]+\/)*[\w.@%+~=-]+\.[\w]+$/.test(trimmed)) {
+      if (isImageFileName(trimmed)) {
+        images.push({ alt: trimmed.split("/").pop() || "Gambar", src: trimmed });
+        continue;
+      }
+      if (isDocFileName(trimmed)) {
+        files.push({ name: trimmed.split("/").pop() || "File", src: trimmed });
+        continue;
+      }
     }
     kept.push(line);
   }
-  return { text: kept.join("\n").replace(/\s+$/, ""), images };
+  return { text: kept.join("\n").replace(/\s+$/, ""), images, files };
 }
 
 export function isToolResultError(result: unknown): boolean {

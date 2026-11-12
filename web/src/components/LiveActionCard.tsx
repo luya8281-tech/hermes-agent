@@ -65,6 +65,27 @@ export const VeeSpinner: React.FC<{ size?: number; className?: string }> = ({
   );
 };
 
+/**
+ * Turn-end settle: actions still marked running when their turn finishes
+ * (missed completion event, crash, interrupt) must render as finished —
+ * otherwise their spinner/shimmer runs again on every later render.
+ */
+export function settleActions(actions: ActionInfo[]): ActionInfo[] {
+  let changed = false;
+  const next = actions.map((action) => {
+    if (action.status !== "running") return action;
+    changed = true;
+    return {
+      ...action,
+      status: "done" as const,
+      durationMs:
+        action.durationMs ??
+        (action.startedAt ? Date.now() - action.startedAt : undefined),
+    };
+  });
+  return changed ? next : actions;
+}
+
 export const StatusGlyph: React.FC<{ action: ActionInfo }> = ({ action }) => {
   if (action.status === "running") {
     return <VeeSpinner size={13} className="text-[var(--vc-primary)]" />;
