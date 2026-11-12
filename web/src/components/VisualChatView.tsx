@@ -20,6 +20,8 @@ import {
   Globe,
   FolderSearch,
   ShieldCheck,
+  Paperclip,
+  X,
 } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -32,7 +34,13 @@ import {
   formatToolOutput,
   formatToolSubject,
   isToolResultError,
+  splitUserImages,
 } from "@/lib/chat-display";
+import {
+  imageFilesFromTransfer,
+  transferMayContainImage,
+  uploadChatImage,
+} from "@/lib/chatImagePaste";
 import { ChatOperationSummary } from "./ChatOperationSummary";
 import { ChatThinkingCard } from "./ChatThinkingCard";
 import { LiveActionCard, VeeSpinner, type ActionInfo } from "./LiveActionCard";
@@ -211,18 +219,35 @@ const CopyMessageButton: React.FC<{ text: string }> = ({ text }) => {
   );
 };
 
-const UserMessage: React.FC<{ message: ChatMessage }> = ({ message }) => (
-  <div className="vc-msg flex w-full justify-center px-2 py-2.5 transition-colors sm:px-4">
-    <div className="flex w-full max-w-4xl flex-col items-end">
-      <div className="max-w-[85%] rounded-2xl border border-[var(--vc-border)] bg-[var(--vc-secondary)] px-3.5 py-2 text-left font-sans text-[14px] leading-snug text-[var(--vc-fg)] sm:max-w-2xl">
-        <span className="whitespace-pre-wrap break-words">{message.content}</span>
-      </div>
-      <div className="vc-msg-toolbar mt-1 flex items-center justify-end pr-0.5">
-        <CopyMessageButton text={message.content} />
+const UserMessage: React.FC<{ message: ChatMessage }> = ({ message }) => {
+  const { text, images } = splitUserImages(message.content);
+  return (
+    <div className="vc-msg flex w-full justify-center px-2 py-2.5 transition-colors sm:px-4">
+      <div className="flex w-full max-w-4xl flex-col items-end">
+        {text && (
+          <div className="max-w-[85%] rounded-2xl border border-[var(--vc-border)] bg-[var(--vc-secondary)] px-3.5 py-2 text-left font-sans text-[14px] leading-snug text-[var(--vc-fg)] sm:max-w-2xl">
+            <span className="whitespace-pre-wrap break-words">{text}</span>
+          </div>
+        )}
+        {images.length > 0 && (
+          <div className="mt-1.5 flex w-full max-w-[85%] flex-col items-end gap-1.5 sm:max-w-md">
+            {images.map((image) => (
+              <ManagedImage
+                key={image.src}
+                src={image.src}
+                alt={image.alt}
+                explicit
+              />
+            ))}
+          </div>
+        )}
+        <div className="vc-msg-toolbar mt-1 flex items-center justify-end pr-0.5">
+          <CopyMessageButton text={message.content} />
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
 
 const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
   message,
@@ -356,6 +381,17 @@ function sessionShort(model: string): string {
   return model.length > 34 ? `${model.slice(0, 31)}…` : model;
 }
 
+interface PendingImage {
+  id: string;
+  previewUrl: string;
+  name: string;
+  status: "uploading" | "ready" | "error";
+  path?: string;
+  error?: string;
+}
+
+const MAX_PENDING_IMAGES = 4;
+
 export const VisualChatView: React.FC<VisualChatViewProps> = ({
   scopedProfile,
   resumeSessionId,
@@ -372,6 +408,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
   const [model, setModel] = useState("");
   const [title, setTitle] = useState("");
   const [showJump, setShowJump] = useState(false);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -392,6 +429,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     scopedProfileRef.current = scopedProfile;
@@ -955,19 +993,95 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
     setShowJump(!atBottom);
   }, []);
 
+  const removePendingImage = useCallback((id: string) => {
+    setPendingImages((previous) => {
+      const removed = previous.find((item) => item.id === id);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return previous.filter((item) => item.id !== id);
+    });
+  }, []);
+
+  const clearPendingImages = useCallback(() => {
+    setPendingImages((previous) => {
+      previous.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      return [];
+    });
+  }, []);
+
+  const addImageFiles = useCallback(
+    (files: File[]) => {
+      const fresh = files.filter((file) => file.type.startsWith("image/"));
+      if (!fresh.length) return;
+      const room = Math.max(0, MAX_PENDING_IMAGES - pendingImages.length);
+      const picked = fresh.slice(0, room);
+      if (!picked.length) return;
+      const profile = scopedProfileRef.current || "";
+      const items: PendingImage[] = picked.map((file) => ({
+        id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        previewUrl: URL.createObjectURL(file),
+        name: file.name || "foto",
+        status: "uploading",
+      }));
+      setPendingImages((previous) => [...previous, ...items]);
+      items.forEach((item, index) => {
+        void uploadChatImage(picked[index], profile)
+          .then((uploaded) => {
+            setPendingImages((current) =>
+              current.map((entry) =>
+                entry.id === item.id
+                  ? {
+                      ...entry,
+                      status: "ready",
+                      path: uploaded.path,
+                      name: uploaded.name,
+                    }
+                  : entry,
+              ),
+            );
+          })
+          .catch((err: unknown) => {
+            setPendingImages((current) =>
+              current.map((entry) =>
+                entry.id === item.id
+                  ? {
+                      ...entry,
+                      status: "error",
+                      error:
+                        err instanceof Error ? err.message : "Upload gagal",
+                    }
+                  : entry,
+              ),
+            );
+          });
+      });
+    },
+    [pendingImages.length],
+  );
+
   const handleSend = useCallback(() => {
     const text = input.trim();
-    if (!text || isGenerating) return;
+    const ready = pendingImages.filter(
+      (item) => item.status === "ready" && item.path,
+    );
+    const uploading = pendingImages.some(
+      (item) => item.status === "uploading",
+    );
+    if ((!text && !ready.length) || isGenerating || uploading) return;
+    // Attached photos travel as markdown image lines: the agent receives the
+    // server path, and the user's own bubble renders the photo inline.
+    const lines = ready.map((item) => `![${item.name}](${item.path})`);
+    const fullText = [text, ...lines].filter(Boolean).join("\n");
     setInput("");
+    clearPendingImages();
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
     if (!sessionReadyRef.current || !liveSessionIdRef.current) {
-      pendingPromptRef.current = text;
+      pendingPromptRef.current = fullText;
       return;
     }
-    submitPrompt(text);
-  }, [input, isGenerating, submitPrompt]);
+    submitPrompt(fullText);
+  }, [input, isGenerating, pendingImages, submitPrompt, clearPendingImages]);
 
   const handleStop = useCallback(() => {
     const sessionId = liveSessionIdRef.current;
@@ -991,9 +1105,10 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
     }
     loadedResumeRef.current = null;
     activeStoredIdRef.current = null;
+    clearPendingImages();
     beginSession(null);
     onNewChat?.();
-  }, [beginSession, onNewChat, sendRequest]);
+  }, [beginSession, onNewChat, sendRequest, clearPendingImages]);
 
   const handleRetryLoad = useCallback(() => {
     beginSession(loadedResumeRef.current ?? null);
@@ -1228,7 +1343,66 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
               event.preventDefault();
               handleSend();
             }}
+            onPaste={(event) => {
+              const files = imageFilesFromTransfer(event.clipboardData);
+              if (files.length) {
+                event.preventDefault();
+                addImageFiles(files);
+              }
+            }}
+            onDragOver={(event) => {
+              if (transferMayContainImage(event.dataTransfer)) {
+                event.preventDefault();
+              }
+            }}
+            onDrop={(event) => {
+              const files = imageFilesFromTransfer(event.dataTransfer);
+              if (files.length) {
+                event.preventDefault();
+                addImageFiles(files);
+              }
+            }}
           >
+            {pendingImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 px-3.5 pt-2.5">
+                {pendingImages.map((item) => (
+                  <div
+                    key={item.id}
+                    className="relative h-14 w-14 shrink-0"
+                    title={
+                      item.status === "error" ? item.error : item.name
+                    }
+                  >
+                    <img
+                      src={item.previewUrl}
+                      alt={item.name}
+                      className={`h-14 w-14 rounded-lg border border-[var(--vc-border)] object-cover ${
+                        item.status === "uploading" ? "opacity-50" : ""
+                      }`}
+                    />
+                    {item.status === "uploading" && (
+                      <span className="absolute inset-0 flex items-center justify-center">
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--vc-muted-fg)] border-t-transparent" />
+                      </span>
+                    )}
+                    {item.status === "error" && (
+                      <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-red-500/20 font-sans text-[9px] font-medium text-red-400">
+                        Gagal
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removePendingImage(item.id)}
+                      className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--vc-secondary)] text-[var(--vc-fg)] shadow"
+                      title="Hapus lampiran"
+                      aria-label="Hapus lampiran"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="px-3.5 pb-1 pt-2.5">
               <textarea
                 ref={textareaRef}
@@ -1243,6 +1417,28 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
 
             <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-0.5">
               <div className="flex min-w-0 items-center gap-1">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  onChange={(event) => {
+                    addImageFiles(Array.from(event.target.files ?? []));
+                    event.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--vc-muted-fg)] transition-colors hover:bg-white/[0.05] hover:text-[var(--vc-fg)]"
+                  title="Lampirkan foto"
+                  aria-label="Lampirkan foto"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
                 <span
                   className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 font-sans text-[11px] font-medium text-[var(--vc-muted-fg)]"
                   title={model || "Hermes Agent"}
@@ -1276,7 +1472,13 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
                 ) : (
                   <button
                     type="submit"
-                    disabled={!input.trim()}
+                    disabled={
+                      (!input.trim() &&
+                        !pendingImages.some(
+                          (item) => item.status === "ready",
+                        )) ||
+                      pendingImages.some((item) => item.status === "uploading")
+                    }
                     className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--vc-primary)] text-white transition-colors hover:bg-[var(--vc-primary-hover)] disabled:pointer-events-none disabled:opacity-30"
                     title="Kirim pesan"
                   >

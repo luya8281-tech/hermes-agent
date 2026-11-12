@@ -173,6 +173,41 @@ export function extractMarkdownImageSources(text: string): string[] {
   return out;
 }
 
+export interface UserImageAttachment {
+  alt: string;
+  src: string;
+}
+
+/** Split whole-line image references out of a user message: markdown image
+ * lines and bare absolute image paths render as photos below the bubble
+ * instead of raw text. Anything else stays untouched. */
+export function splitUserImages(text: string): {
+  text: string;
+  images: UserImageAttachment[];
+} {
+  const lines = (text || "").split("\n");
+  const kept: string[] = [];
+  const images: UserImageAttachment[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const md = trimmed.match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/);
+    if (md) {
+      images.push({ alt: md[1], src: md[2] });
+      continue;
+    }
+    if (
+      /^\/(?:[\w.@%+~=-]+\/)*[\w.@%+~=-]+\.(?:png|jpg|jpeg|webp|gif|avif|bmp)$/i.test(
+        trimmed,
+      )
+    ) {
+      images.push({ alt: trimmed.split("/").pop() || "Gambar", src: trimmed });
+      continue;
+    }
+    kept.push(line);
+  }
+  return { text: kept.join("\n").replace(/\s+$/, ""), images };
+}
+
 export function isToolResultError(result: unknown): boolean {
   if (!result || typeof result !== "object") return false;
   const record = result as Record<string, unknown>;
