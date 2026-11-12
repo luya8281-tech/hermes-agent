@@ -25,10 +25,12 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { PanelRight, RotateCcw, X } from "lucide-react";
+import { PanelRight, RotateCcw, X, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router";
+
+import { VisualChatView } from "@/components/VisualChatView";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
@@ -159,6 +161,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setHasActivated((prev) => latchChatActivation(prev, isActive));
   }, [isActive]);
   const [searchParams, setSearchParams] = useSearchParams();
+  const [viewMode, setViewMode] = useState<"visual" | "terminal">(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("hermes_view_mode") as any) || "visual";
+    }
+    return "visual";
+  });
+
+  const handleSetViewMode = (mode: "visual" | "terminal") => {
+    setViewMode(mode);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("hermes_view_mode", mode);
+    }
+  };
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
   // In gated (OAuth) mode the server intentionally omits the session token —
@@ -1891,19 +1906,40 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ref={termWrapRef}
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
+            viewMode === "visual" ? "p-0" : "p-2 sm:p-3",
           )}
           style={{
-            backgroundColor: terminalBg,
+            backgroundColor: viewMode === "visual" ? "#030712" : terminalBg,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
-          <div
-            ref={hostRef}
-            role="region"
-            aria-label="Chat terminal"
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
-          />
+          {viewMode === "visual" ? (
+            <VisualChatView
+              channel={channel}
+              scopedProfile={scopedProfile}
+              resumeSessionId={resumeParam}
+              onSwitchToTerminal={() => handleSetViewMode("terminal")}
+            />
+          ) : (
+            <>
+              <div className="absolute top-2 right-14 z-20">
+                <Button
+                  size="sm"
+                  outlined
+                  onClick={() => handleSetViewMode("visual")}
+                  prefix={<Sparkles className="h-3.5 w-3.5 text-emerald-400" />}
+                >
+                  Mode Visual
+                </Button>
+              </div>
+              <div
+                ref={hostRef}
+                role="region"
+                aria-label="Chat terminal"
+                className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+              />
+            </>
+          )}
 
           {showReconnectOverlay && (
             <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
