@@ -1,9 +1,10 @@
 /* ------------------------------------------------------------------ */
 /* VeeChat — the ai-chat (vee2.my.id) visual language, scoped.         */
 /*                                                                     */
-/* Only the chat surface opts in via `.veechat`, so the warm Claude    */
-/* palette and the Lora/Inter pairing never leak into the rest of the  */
-/* Hermes dashboard (which keeps its own theme tokens).                */
+/* The chat surface opts in via `.veechat`, and the surrounding shell */
+/* (App sidebar + header) opts in via `.veechat-shell` on the /chat    */
+/* route only, so the warm palette and the Lora/Inter pairing never    */
+/* leak into the rest of the Hermes dashboard.                         */
 /* ------------------------------------------------------------------ */
 
 @font-face {
@@ -51,7 +52,8 @@
     U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
-.veechat {
+.veechat,
+.veechat-shell {
   /* ai-chat "Claude Obsidian" palette. */
   --vc-bg: #111110;
   --vc-fg: #ede8df;
@@ -83,6 +85,20 @@
   --midground-base: var(--vc-fg);
   --midground: var(--vc-fg);
   --color-text-secondary: var(--vc-muted-fg);
+  --color-text-primary: var(--vc-fg);
+  --color-text-tertiary: #6f6c64;
+  --primary: var(--vc-primary);
+  --primary-base: var(--vc-primary);
+  --color-primary: var(--vc-primary);
+  --theme-font-sans: var(--vc-sans);
+  --theme-font-display: var(--vc-sans);
+  --component-sidebar-background: var(--vc-sidebar);
+  --component-header-background: var(--vc-bg);
+  --component-sidebar-clip-path: none;
+  --component-header-clip-path: none;
+  --component-tab-clip-path: none;
+  --component-sidebar-border-image: none;
+  --component-header-border-image: none;
 
   font-family: var(--vc-sans);
   color: var(--vc-fg);
@@ -299,4 +315,53 @@
   .vc-msg-toolbar {
     opacity: 1;
   }
+}
+
+/* --- Chat page shell ------------------------------------------------ */
+/* App sidebar + header on the /chat route only (`.veechat-shell` is set
+   on the App root while the chat route is active). Rounds and warms the
+   chrome around the transcript: normal-case Inter nav with a soft active
+   pill instead of the all-caps condensed terminal look. */
+
+.veechat-shell #app-sidebar {
+  font-family: var(--vc-sans);
+}
+
+.veechat-shell #app-sidebar .uppercase {
+  text-transform: none;
+  letter-spacing: -0.01em;
+}
+
+.veechat-shell #app-sidebar nav a {
+  margin: 1px 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+.veechat-shell #app-sidebar nav a[aria-current="page"] {
+  background: var(--vc-secondary);
+  color: var(--vc-fg);
+  font-weight: 600;
+}
+
+/* The 1px active bar is replaced by the pill background. */
+.veechat-shell #app-sidebar nav a[aria-current="page"] > span.left-0 {
+  display: none;
+}
+
+.veechat-shell header {
+  font-family: var(--vc-sans);
+}
+
+/* Mondwest display face -> Inter inside any VeeChat scope (the mobile
+   model/tools sheet is portaled to <body>, so it carries `.veechat`
+   itself rather than inheriting the shell scope). */
+.veechat.font-mondwest,
+.veechat .font-mondwest,
+.veechat-shell .font-mondwest {
+  font-family: var(--vc-sans);
 }
