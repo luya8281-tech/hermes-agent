@@ -163,7 +163,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [viewMode, setViewMode] = useState<"visual" | "terminal">(() => {
     if (typeof window !== "undefined") {
-      return (localStorage.getItem("hermes_view_mode") as any) || "visual";
+      return localStorage.getItem("hermes_view_mode") === "terminal"
+        ? "terminal"
+        : "visual";
     }
     return "visual";
   });
@@ -513,6 +515,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // mounted, hidden ChatPage from opening `/api/pty` on every dashboard
     // page. Sticky, so switching away from /chat keeps the PTY alive.
     if (!hasActivated) return;
+    // The visual transcript is a JSON-RPC sidecar client. Keeping the PTY
+    // child alive behind it boots a second agent (and a second TUI) for a
+    // chat nobody is looking at, so only the terminal view owns the PTY.
+    if (viewMode !== "terminal") return;
 
     const host = hostRef.current;
     if (!host) return;
@@ -1617,6 +1623,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [
     hasActivated,
+    viewMode,
     channel,
     clearReconnectTimer,
     resumeParam,
@@ -1909,7 +1916,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             viewMode === "visual" ? "p-0" : "p-2 sm:p-3",
           )}
           style={{
-            backgroundColor: viewMode === "visual" ? "#030712" : terminalBg,
+            backgroundColor: viewMode === "visual" ? "#111110" : terminalBg,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
@@ -1918,6 +1925,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               channel={channel}
               scopedProfile={scopedProfile}
               resumeSessionId={resumeParam}
+              onNewChat={startFreshDashboardChat}
+              onSessionChange={(sessionId) => {
+                const next = new URLSearchParams(searchParams);
+                if (next.get("resume") === sessionId) return;
+                next.set("resume", sessionId);
+                setSearchParams(next, { replace: true });
+              }}
               onSwitchToTerminal={() => handleSetViewMode("terminal")}
             />
           ) : (
@@ -2020,11 +2034,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          <CopyLastButton
-            onClick={handleCopyLast}
-            copied={copyState === "copied"}
-            color={terminalFg}
-          />
+          {viewMode === "terminal" && (
+            <CopyLastButton
+              onClick={handleCopyLast}
+              copied={copyState === "copied"}
+              color={terminalFg}
+            />
+          )}
 
           {chatPanelCollapsed && (
             <Button

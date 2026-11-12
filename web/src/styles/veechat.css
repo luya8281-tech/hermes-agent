@@ -1,0 +1,302 @@
+/* ------------------------------------------------------------------ */
+/* VeeChat — the ai-chat (vee2.my.id) visual language, scoped.         */
+/*                                                                     */
+/* Only the chat surface opts in via `.veechat`, so the warm Claude    */
+/* palette and the Lora/Inter pairing never leak into the rest of the  */
+/* Hermes dashboard (which keeps its own theme tokens).                */
+/* ------------------------------------------------------------------ */
+
+@font-face {
+  font-family: "VeeChat Serif";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts-veechat/Lora-latin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "VeeChat Serif";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts-veechat/Lora-latin-ext.woff2") format("woff2");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "VeeChat Sans";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts-veechat/Inter-latin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "VeeChat Sans";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts-veechat/Inter-latin-ext.woff2") format("woff2");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+.veechat {
+  /* ai-chat "Claude Obsidian" palette. */
+  --vc-bg: #111110;
+  --vc-fg: #ede8df;
+  --vc-card: #191918;
+  --vc-secondary: #21211e;
+  --vc-secondary-hover: #2b2b27;
+  --vc-muted-fg: #969288;
+  --vc-border: #262624;
+  --vc-primary: #cc785c;
+  --vc-primary-hover: #db8569;
+  --vc-sidebar: #0c0c0b;
+  --vc-danger: #ef4444;
+  --vc-success: #4ade80;
+  --vc-sans:
+    "VeeChat Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --vc-serif:
+    "VeeChat Serif", ui-serif, Georgia, Cambria, "Times New Roman", Times,
+    serif;
+  --vc-mono:
+    ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+
+  /* Re-point the dashboard's shadcn-compat tokens at the warm palette so
+     shared components (Markdown code blocks, borders) inherit the theme
+     inside this subtree only. `@theme inline` resolves these at use time. */
+  --background-base: var(--vc-bg);
+  --background: var(--vc-bg);
+  --midground-base: var(--vc-fg);
+  --midground: var(--vc-fg);
+  --color-text-secondary: var(--vc-muted-fg);
+
+  font-family: var(--vc-sans);
+  color: var(--vc-fg);
+  background: var(--vc-bg);
+  color-scheme: dark;
+}
+
+.veechat ::selection {
+  background: rgb(204 120 92 / 0.35);
+  color: #fff;
+}
+
+/* Scoped scrollbar — thin warm gray, like ai-chat. */
+.veechat ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.veechat ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.veechat ::-webkit-scrollbar-thumb {
+  background: #2c2c29;
+  border: 2px solid var(--vc-bg);
+  border-radius: 9999px;
+}
+.veechat ::-webkit-scrollbar-thumb:hover {
+  background: #3b3b37;
+}
+
+.vc-serif {
+  font-family: var(--vc-serif);
+}
+
+/* --- Assistant prose ------------------------------------------------ */
+
+.vc-prose > div {
+  font-size: 15px;
+  line-height: 1.68;
+  letter-spacing: 0.002em;
+  color: var(--vc-fg);
+}
+.vc-prose > div p,
+.vc-prose > div li,
+.vc-prose > div h1,
+.vc-prose > div h2,
+.vc-prose > div h3,
+.vc-prose > div h4 {
+  font-family: var(--vc-serif);
+}
+.vc-prose > div p {
+  margin: 0 0 0.75em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.vc-prose > div p:last-child {
+  margin-bottom: 0;
+}
+.vc-prose > div ul,
+.vc-prose > div ol {
+  font-size: 15px;
+  margin: 0.35em 0 0.7em;
+}
+.vc-prose > div li {
+  margin: 0.14em 0;
+  line-height: 1.62;
+}
+.vc-prose > div li > p {
+  display: inline;
+  margin: 0;
+}
+.vc-prose > div h1,
+.vc-prose > div h2,
+.vc-prose > div h3,
+.vc-prose > div h4 {
+  margin: 1.1em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.vc-prose > div a {
+  color: var(--vc-primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.vc-prose > div a:hover {
+  color: var(--vc-primary-hover);
+}
+.vc-prose > div strong {
+  font-weight: 650;
+  color: #f4efe6;
+}
+.vc-prose > div hr {
+  border-color: var(--vc-border);
+  margin: 1em 0;
+}
+.vc-prose > div code,
+.vc-prose > div pre,
+.vc-prose > div pre code {
+  font-family: var(--vc-mono);
+}
+.vc-prose > div pre {
+  background: #151514;
+  border: 1px solid var(--vc-border);
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.8rem;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-x: auto;
+}
+
+/* --- Motion --------------------------------------------------------- */
+
+@keyframes vc-abs-spin {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.04);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+@keyframes vc-abs-petal {
+  0%,
+  100% {
+    transform: scaleY(0.5);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+.vc-spinner {
+  animation: vc-abs-spin 3.2s cubic-bezier(0.45, 0.05, 0.35, 0.95) infinite;
+  transform-origin: 50% 50%;
+}
+.vc-spinner-petal {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: vc-abs-petal 1.9s ease-in-out infinite;
+}
+
+@keyframes vc-text-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+.vc-text-shimmer {
+  background: linear-gradient(
+    90deg,
+    currentColor 35%,
+    var(--vc-primary) 50%,
+    currentColor 65%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: vc-text-shimmer 2.4s linear infinite;
+}
+
+@keyframes vc-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0;
+  }
+}
+.vc-caret {
+  display: inline-block;
+  width: 0.45em;
+  height: 1.02em;
+  margin-left: 2px;
+  vertical-align: -0.16em;
+  background: var(--vc-primary);
+  animation: vc-caret 1.05s steps(1) infinite;
+}
+
+/* --- Composer ------------------------------------------------------- */
+
+.vc-composer {
+  background: var(--vc-card);
+  border: 1px solid var(--vc-border);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+.vc-composer:focus-within {
+  border-color: rgb(204 120 92 / 0.58);
+  box-shadow: 0 0 0 1px rgb(204 120 92 / 0.12);
+}
+.vc-composer textarea {
+  field-sizing: content;
+}
+
+/* Hover-reveal message toolbar; always visible on touch. */
+.vc-msg-toolbar {
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+.vc-msg:hover .vc-msg-toolbar,
+.vc-msg-toolbar:focus-within {
+  opacity: 1;
+}
+@media (hover: none) {
+  .vc-msg-toolbar {
+    opacity: 1;
+  }
+}

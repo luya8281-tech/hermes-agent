@@ -7,6 +7,7 @@
    stack (Tabs, Segmented, Typography, Buttons, etc. all look unstyled). */
 @import '@nous-research/ui/styles/fonts.css';
 @import '@nous-research/ui/styles/globals.css';
+@import './styles/veechat.css';
 
 /* Scan the published design-system bundle so its utility classes survive
    Tailwind's JIT purge. */

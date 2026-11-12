@@ -1,9 +1,18 @@
-import React, { useState, useEffect } from "react";
-import { Check, XCircle, ChevronDown, ChevronUp, Copy, CheckCheck } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Check, ChevronDown, ChevronUp, Copy, ExternalLink, XCircle } from "lucide-react";
+
+import { copyTextToClipboard } from "@/lib/clipboard";
+import {
+  formatDuration,
+  getActionBadge,
+  tailOutput,
+} from "@/lib/chat-display";
 
 export interface ActionInfo {
   id: string;
+  /** Human badge shown before the subject (BASH, SEARCH, BROWSER, …). */
   type: string;
+  /** Raw tool name. */
   label: string;
   status: "running" | "done";
   subject?: string;
@@ -12,136 +21,221 @@ export interface ActionInfo {
   output?: string;
   details?: string;
   isError?: boolean;
+  url?: string;
 }
+
+/** Eight-petal abstract spinner — the ai-chat "working" glyph. */
+export const VeeSpinner: React.FC<{ size?: number; className?: string }> = ({
+  size = 13,
+  className = "",
+}) => {
+  const petals = [
+    { angle: 0, height: 9, delay: 0 },
+    { angle: 45, height: 7, delay: -0.6 },
+    { angle: 90, height: 10, delay: -1.2 },
+    { angle: 135, height: 6.5, delay: -0.3 },
+    { angle: 180, height: 9.5, delay: -0.9 },
+    { angle: 225, height: 7.5, delay: -1.5 },
+    { angle: 270, height: 10, delay: -0.15 },
+    { angle: 315, height: 6.5, delay: -1.05 },
+  ];
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      className={`vc-spinner shrink-0 ${className}`}
+      aria-hidden="true"
+    >
+      {petals.map((petal) => (
+        <g key={petal.angle} transform={`rotate(${petal.angle} 12 12)`}>
+          <rect
+            className="vc-spinner-petal"
+            x="11"
+            y={12 - petal.height}
+            width="2"
+            height={petal.height}
+            rx="1"
+            fill="currentColor"
+            style={{ animationDelay: `${petal.delay}s` }}
+          />
+        </g>
+      ))}
+    </svg>
+  );
+};
 
 export const StatusGlyph: React.FC<{ action: ActionInfo }> = ({ action }) => {
   if (action.status === "running") {
-    return (
-      <div className="w-3.5 h-3.5 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin shrink-0" />
-    );
+    return <VeeSpinner size={13} className="text-[var(--vc-primary)]" />;
   }
   if (action.isError) {
-    return <XCircle className="w-3.5 h-3.5 text-red-500 shrink-0" />;
+    return <XCircle className="w-3.5 h-3.5 shrink-0 text-red-500" />;
   }
-  return <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />;
+  return <Check className="w-3.5 h-3.5 shrink-0 text-emerald-500" />;
 };
 
+/**
+ * Compact action row: status · badge · subject · live duration, with the log in
+ * a dropdown. Matches the ai-chat live-action card (no noisy inline output).
+ */
 export const LiveActionCard: React.FC<{ action: ActionInfo }> = ({ action }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+
   const isRunning = action.status === "running";
   const startedAt = action.startedAt;
-  const [elapsed, setElapsed] = useState(0);
+  const [elapsed, setElapsed] = useState(() =>
+    action.startedAt ? Date.now() - action.startedAt : 0,
+  );
 
   useEffect(() => {
     if (!isRunning || !startedAt) return;
-    setElapsed(Date.now() - startedAt);
-    const id = setInterval(() => setElapsed(Date.now() - startedAt), 100);
-    return () => clearInterval(id);
+    const timer = window.setInterval(
+      () => setElapsed(Date.now() - startedAt),
+      250,
+    );
+    return () => window.clearInterval(timer);
   }, [isRunning, startedAt]);
 
-  const durationText = isRunning && startedAt
-    ? (elapsed / 1000).toFixed(1) + "s"
-    : action.durationMs !== undefined
-    ? (action.durationMs / 1000).toFixed(1) + "s"
-    : "";
-
+  const duration = formatDuration(isRunning && startedAt ? elapsed : action.durationMs);
   const fullText = action.output || action.details || "";
+  const subject = action.subject || action.label;
+  const badge = getActionBadge(action.type, action.label);
+  const tail = useMemo(
+    () => (isOpen ? tailOutput(fullText, 8, 900) : ""),
+    [isOpen, fullText],
+  );
+  const lineCount = useMemo(
+    () => (fullText ? fullText.split("\n").length : 0),
+    [fullText],
+  );
 
-  const handleCopy = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(fullText);
+  const handleCopy = async (event: React.MouseEvent) => {
+    event.stopPropagation();
+    const ok = await copyTextToClipboard(fullText);
+    if (!ok) return;
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const getBadgeStyle = (type: string) => {
-    const t = type.toLowerCase();
-    if (t.includes("bash") || t === "terminal") {
-      return "bg-purple-500/15 text-purple-400 border-purple-500/30";
-    }
-    if (t.includes("simular") || t.includes("box")) {
-      return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
-    }
-    if (t.includes("search") || t.includes("web")) {
-      return "bg-amber-500/15 text-amber-400 border-amber-500/30";
-    }
-    if (t.includes("file") || t.includes("workspace")) {
-      return "bg-blue-500/15 text-blue-400 border-blue-500/30";
-    }
-    return "bg-slate-500/15 text-slate-300 border-slate-500/30";
+    window.setTimeout(() => setCopied(false), 1800);
   };
 
   return (
-    <div
-      className={`rounded-lg border transition-all overflow-hidden ${
-        isRunning
-          ? "bg-slate-900/90 border-emerald-500/40 shadow-sm shadow-emerald-500/10"
-          : action.isError
-          ? "bg-slate-900/70 border-red-500/40"
-          : "bg-slate-900/70 border-slate-800 hover:border-slate-700"
-      }`}
-    >
-      <div
-        className="flex items-center justify-between px-3 py-2 cursor-pointer select-none gap-3"
-        onClick={() => setIsOpen(!isOpen)}
+    <div className="my-0.5 w-full max-w-2xl font-sans">
+      <button
+        type="button"
+        onClick={() => setIsOpen((value) => !value)}
+        aria-expanded={isOpen}
+        className="group flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-white/[0.035]"
       >
-        <div className="flex items-center gap-2.5 min-w-0 flex-1">
-          <StatusGlyph action={action} />
-          <span
-            className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0 ${getBadgeStyle(
-              action.type
-            )}`}
-          >
-            {action.type}
+        <StatusGlyph action={action} />
+        <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-[var(--vc-muted-fg)]/80">
+          {badge}
+        </span>
+        <span
+          className={`min-w-0 flex-1 truncate font-mono text-[11px] ${
+            isRunning
+              ? "vc-text-shimmer"
+              : action.isError
+                ? "text-red-500/90"
+                : "text-[var(--vc-fg)]/85"
+          }`}
+          title={subject}
+        >
+          {subject}
+        </span>
+        {duration && (
+          <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--vc-muted-fg)]">
+            {duration}
           </span>
-          <span
-            className="font-mono text-xs text-slate-200 truncate flex-1"
-            title={action.subject}
-          >
-            {action.subject || action.label}
-          </span>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {durationText && (
-            <span className="font-mono text-[11px] text-slate-400">
-              {durationText}
-            </span>
-          )}
-          {isOpen ? (
-            <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
-          ) : (
-            <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
-          )}
-        </div>
-      </div>
+        )}
+        {isOpen ? (
+          <ChevronUp className="w-3.5 h-3.5 shrink-0 text-[var(--vc-muted-fg)]" />
+        ) : (
+          <ChevronDown className="w-3.5 h-3.5 shrink-0 text-[var(--vc-muted-fg)]" />
+        )}
+      </button>
 
       {isOpen && (
-        <div className="border-t border-slate-800 bg-black/60 p-3 space-y-2">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-[11px] uppercase font-semibold text-slate-400 tracking-wider">
-              Output Eksekusi Tool
-            </span>
-            <button
-              onClick={handleCopy}
-              className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs border border-slate-700 transition-colors"
-            >
-              {copied ? (
-                <>
-                  <CheckCheck className="w-3 h-3 text-emerald-400" />
-                  <span className="text-emerald-400">Tersalin</span>
-                </>
-              ) : (
-                <>
+        <div className="space-y-2 pb-2 pl-7 pr-1.5 pt-1">
+          {action.label && action.label !== subject && (
+            <div className="font-mono text-[10.5px] text-[var(--vc-muted-fg)]">
+              {action.label}
+            </div>
+          )}
+
+          {tail && (
+            <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-[var(--vc-border)]/70 bg-[#151514] px-2 py-1.5 font-mono text-[10.5px] leading-snug text-[var(--vc-muted-fg)]">
+              {tail}
+            </pre>
+          )}
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {action.url && (
+              <a
+                href={action.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(event) => event.stopPropagation()}
+                className="inline-flex items-center gap-1 rounded border border-[var(--vc-border)] bg-[var(--vc-secondary)]/70 px-2 py-0.5 text-[10px] font-medium text-[var(--vc-fg)] transition-colors hover:bg-[#2b2b27]"
+              >
+                <ExternalLink className="w-3 h-3" />
+                <span>Buka</span>
+              </a>
+            )}
+
+            {fullText && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setLogOpen((value) => !value);
+                }}
+                className="inline-flex items-center gap-1 rounded border border-[var(--vc-border)] bg-[var(--vc-secondary)]/70 px-2 py-0.5 text-[10px] font-medium text-[var(--vc-muted-fg)] transition-colors hover:bg-[#2b2b27] hover:text-[var(--vc-fg)]"
+              >
+                {logOpen ? "Tutup log" : "Log penuh"}
+                <span className="text-[9px] opacity-70">{lineCount}</span>
+              </button>
+            )}
+
+            {fullText && (
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="inline-flex items-center gap-1 rounded border border-[var(--vc-border)] bg-[var(--vc-secondary)]/70 px-2 py-0.5 text-[10px] font-medium text-[var(--vc-muted-fg)] transition-colors hover:bg-[#2b2b27] hover:text-[var(--vc-fg)]"
+              >
+                {copied ? (
+                  <Check className="w-3 h-3 text-[var(--vc-primary)]" />
+                ) : (
                   <Copy className="w-3 h-3" />
-                  <span>Salin Log</span>
-                </>
-              )}
-            </button>
+                )}
+                <span>{copied ? "Tersalin" : "Salin"}</span>
+              </button>
+            )}
           </div>
-          <pre className="font-mono text-xs text-slate-200 bg-slate-950 p-2.5 rounded border border-slate-800/80 overflow-x-auto max-h-64 whitespace-pre-wrap break-all leading-relaxed">
-            {fullText || "(Tidak ada output teks)"}
-          </pre>
+
+          {logOpen && fullText && (
+            <div className="overflow-hidden rounded-md border border-[var(--vc-border)] bg-[#141413]">
+              <div className="flex items-center justify-between border-b border-[var(--vc-border)]/70 bg-[var(--vc-secondary)]/40 px-2 py-1 font-mono text-[10px] text-[var(--vc-muted-fg)]">
+                <span>{lineCount} baris</span>
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="inline-flex items-center gap-1 hover:text-[var(--vc-fg)]"
+                >
+                  {copied ? (
+                    <Check className="w-3 h-3 text-[var(--vc-primary)]" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                  <span>{copied ? "Tersalin" : "Salin"}</span>
+                </button>
+              </div>
+              <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-[10.5px] leading-relaxed text-[var(--vc-muted-fg)]">
+                {fullText}
+              </pre>
+            </div>
+          )}
         </div>
       )}
     </div>

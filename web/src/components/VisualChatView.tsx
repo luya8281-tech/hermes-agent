@@ -1,17 +1,39 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
-  Send,
-  Square,
-  Bot,
-  Sparkles,
-  Terminal as TerminalIcon,
-  PlusCircle,
-  ChevronDown,
-  ChevronUp,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Copy,
   Cpu,
-  Layers,
+  Plus,
+  RotateCcw,
+  Sparkles,
+  Square,
+  Terminal as TerminalIcon,
+  Wrench,
+  Globe,
+  FolderSearch,
+  ShieldCheck,
 } from "lucide-react";
-import { LiveActionCard, type ActionInfo } from "./LiveActionCard";
+
+import { api } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { normalizeSessionTitle } from "@/lib/chat-title";
+import {
+  formatDuration,
+  formatToolOutput,
+  formatToolSubject,
+  isToolResultError,
+} from "@/lib/chat-display";
+import { ChatOperationSummary } from "./ChatOperationSummary";
+import { ChatThinkingCard } from "./ChatThinkingCard";
+import { LiveActionCard, VeeSpinner, type ActionInfo } from "./LiveActionCard";
 import { Markdown } from "./Markdown";
 
 export interface ChatMessage {
@@ -21,6 +43,9 @@ export interface ChatMessage {
   reasoning?: string;
   actions?: ActionInfo[];
   isStreaming?: boolean;
+  startedAt?: number;
+  latencyMs?: number;
+  error?: string;
 }
 
 export interface VisualChatViewProps {
@@ -28,564 +53,1220 @@ export interface VisualChatViewProps {
   scopedProfile?: string;
   resumeSessionId?: string | null;
   onSessionChange?: (sessionId: string) => void;
+  onNewChat?: () => void;
   onSwitchToTerminal?: () => void;
 }
 
-function mapToolType(toolName: string) {
-  const lower = (toolName || "").toLowerCase();
-  if (lower === "terminal" || lower.includes("bash") || lower.includes("shell")) {
-    return { label: "BASH", cls: "bash" };
-  }
-  if (lower.startsWith("mcp__simular_box__")) {
-    return { label: "SIMULAR", cls: "simular" };
-  }
-  if (lower.includes("web_search") || lower.includes("search")) {
-    return { label: "SEARCH", cls: "web" };
-  }
-  if (lower.includes("web_extract") || lower.includes("buka_web") || lower.includes("fetch")) {
-    return { label: "WEB", cls: "web" };
-  }
-  if (
-    lower.includes("read_file") ||
-    lower.includes("write_file") ||
-    lower.includes("patch") ||
-    lower.includes("search_files")
-  ) {
-    return { label: "WORKSPACE", cls: "file" };
-  }
-  if (lower.includes("browser")) {
-    return { label: "BROWSER", cls: "simular" };
-  }
-  return { label: (toolName || "TOOL").toUpperCase(), cls: "tool" };
+interface HistoryRow {
+  role?: string;
+  text?: string;
+  content?: string | null;
+  name?: string;
+  context?: string;
+  args?: unknown;
+  tool_call_id?: string;
+  reasoning?: string;
+  reasoning_content?: string;
 }
 
-function formatSubject(toolName: string, context?: any, args?: any): string {
-  if (context && typeof context === "string" && context.trim()) {
-    return context.trim();
-  }
-  if (args) {
-    if (typeof args === "string") return args.slice(0, 100);
-    if (args.command) return String(args.command);
-    if (args.path) return String(args.path);
-    if (args.query) return String(args.query);
-    if (args.url) return String(args.url);
-    try {
-      return JSON.stringify(args).slice(0, 100);
-    } catch {
-      return toolName;
+interface RpcEventPayload {
+  type?: string;
+  session_id?: string;
+  payload?: {
+    text?: string;
+    tool_id?: string;
+    name?: string;
+    context?: string;
+    args?: unknown;
+    duration_s?: number;
+    result?: unknown;
+    error?: string;
+    status?: string;
+    model?: string;
+    title?: string;
+    stored_session_id?: string;
+    message?: string;
+  };
+}
+
+interface RpcFrame {
+  id?: string;
+  method?: string;
+  result?: {
+    session_id?: string;
+    stored_session_id?: string;
+    messages?: HistoryRow[];
+    message_count?: number;
+    running?: boolean;
+    info?: { model?: string; title?: string; stored_session_id?: string };
+  };
+  error?: { message?: string; code?: number };
+  params?: RpcEventPayload;
+}
+
+function projectHistory(rows: HistoryRow[]): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  let assistant: ChatMessage | null = null;
+  let seq = 0;
+
+  const ensureAssistant = (): ChatMessage => {
+    if (!assistant) {
+      assistant = {
+        id: `hist_a_${seq++}`,
+        role: "assistant",
+        content: "",
+        actions: [],
+        isStreaming: false,
+      };
+      messages.push(assistant);
+    }
+    return assistant;
+  };
+
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+
+    if (row.role === "user") {
+      const text = row.text ?? row.content ?? "";
+      if (!text) continue;
+      assistant = null;
+      messages.push({
+        id: `hist_u_${seq++}`,
+        role: "user",
+        content: text,
+      });
+      continue;
+    }
+
+    if (row.role === "assistant") {
+      const text = row.text ?? row.content ?? "";
+      const reasoning =
+        typeof row.reasoning === "string"
+          ? row.reasoning
+          : typeof row.reasoning_content === "string"
+            ? row.reasoning_content
+            : "";
+      if (!text && !reasoning) continue;
+      const message = ensureAssistant();
+      if (text) {
+        message.content = message.content ? `${message.content}\n\n${text}` : text;
+      }
+      if (reasoning) {
+        message.reasoning = message.reasoning
+          ? `${message.reasoning}\n\n${reasoning}`
+          : reasoning;
+      }
+      continue;
+    }
+
+    if (row.role === "tool") {
+      const name = row.name || "tool";
+      const message = ensureAssistant();
+      const subject = formatToolSubject(name, row.context, row.args);
+      message.actions = [
+        ...(message.actions || []),
+        {
+          id: row.tool_call_id || `hist_t_${seq++}`,
+          type: "",
+          label: name,
+          subject,
+          status: "done",
+          output:
+            typeof row.content === "string" ? formatToolOutput(row.content) : "",
+        },
+      ];
     }
   }
-  return toolName || "tool";
+
+  return messages;
 }
 
-function formatOutput(res: any): string {
-  if (!res) return "";
-  if (typeof res === "string") return res;
-  if (res.output) return String(res.output);
-  if (res.content) return String(res.content);
-  try {
-    return JSON.stringify(res, null, 2);
-  } catch {
-    return String(res);
-  }
+const CopyMessageButton: React.FC<{ text: string }> = ({ text }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const ok = await copyTextToClipboard(text);
+    if (!ok) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-[var(--vc-muted-fg)] transition-colors hover:bg-white/[0.05] hover:text-[var(--vc-fg)]"
+      title="Salin pesan"
+    >
+      {copied ? (
+        <Check className="w-3.5 h-3.5 text-[var(--vc-primary)]" />
+      ) : (
+        <Copy className="w-3.5 h-3.5" />
+      )}
+      <span>{copied ? "Disalin" : "Salin"}</span>
+    </button>
+  );
+};
+
+const UserMessage: React.FC<{ message: ChatMessage }> = ({ message }) => (
+  <div className="vc-msg flex w-full justify-center px-3 py-2.5 transition-colors sm:px-6">
+    <div className="flex w-full max-w-3xl flex-col items-end">
+      <div className="max-w-[85%] rounded-2xl border border-[var(--vc-border)] bg-[var(--vc-secondary)] px-3.5 py-2 text-left font-sans text-[14px] leading-snug text-[var(--vc-fg)] sm:max-w-xl">
+        <span className="whitespace-pre-wrap break-words">{message.content}</span>
+      </div>
+      <div className="vc-msg-toolbar mt-1 flex items-center justify-end pr-0.5">
+        <CopyMessageButton text={message.content} />
+      </div>
+    </div>
+  </div>
+);
+
+const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
+  message,
+  isLive,
+}) => {
+  const hasActions = Boolean(message.actions && message.actions.length > 0);
+  const reasoning = message.reasoning || "";
+  const showStandaloneThinking = Boolean(reasoning) && (isLive || !hasActions);
+
+  return (
+    <div className="vc-msg flex w-full justify-center px-3 py-2.5 transition-colors sm:px-6">
+      <div className="flex w-full max-w-3xl flex-col items-start">
+        <div className="w-full text-left">
+          {showStandaloneThinking && (
+            <ChatThinkingCard reasoning={reasoning} isLive={isLive} />
+          )}
+
+          {hasActions &&
+            (isLive ? (
+              <div className="my-0.5 w-full space-y-0.5">
+                {message.actions!.map((action) => (
+                  <LiveActionCard key={action.id} action={action} />
+                ))}
+              </div>
+            ) : (
+              <ChatOperationSummary
+                actions={message.actions!}
+                reasoning={reasoning || undefined}
+              />
+            ))}
+
+          {message.content && (
+            <div className="vc-prose mt-1 w-full break-words">
+              <Markdown content={message.content} streaming={message.isStreaming} />
+            </div>
+          )}
+
+          {isLive &&
+            !message.content &&
+            !reasoning &&
+            !hasActions && (
+              <div className="flex items-center gap-2 py-1 font-sans text-[11.5px] text-[var(--vc-muted-fg)]">
+                <VeeSpinner size={13} />
+                <span className="vc-text-shimmer">Menyiapkan jawaban…</span>
+              </div>
+            )}
+
+          {message.error && (
+            <div className="mt-2 flex items-start gap-2 rounded-xl border border-red-500/40 bg-red-500/10 px-2.5 py-2 font-sans text-[11.5px] text-red-300">
+              <Wrench className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{message.error}</span>
+            </div>
+          )}
+        </div>
+
+        {!isLive && (message.content || message.error) && (
+          <div className="vc-msg-toolbar mt-1 flex items-center gap-1 pl-0.5">
+            {message.content && <CopyMessageButton text={message.content} />}
+            {message.latencyMs ? (
+              <span className="ml-1 font-mono text-[10px] tabular-nums text-[var(--vc-muted-fg)]/60">
+                {formatDuration(message.latencyMs)}
+              </span>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const WORKFLOWS = [
+  {
+    icon: TerminalIcon,
+    label: "Kesehatan Server & Layanan",
+    sub: "RAM · disk · proses",
+    prompt:
+      "Periksa kesehatan server ini: status layanan yang berjalan, penggunaan RAM dan disk, serta proses yang paling banyak memakai resource. Ringkas temuan penting dan rekomendasi tindakannya.",
+  },
+  {
+    icon: Globe,
+    label: "Riset Berita & Web Terkini",
+    sub: "multi-sumber + ringkasan",
+    prompt:
+      "Cari berita teknologi dan AI terbaru hari ini dari beberapa sumber terpercaya, lalu rangkum 5 poin utama beserta tautan sumbernya.",
+  },
+  {
+    icon: FolderSearch,
+    label: "Audit Repositori Aktif",
+    sub: "struktur · dependensi · risiko",
+    prompt:
+      "Periksa repositori yang sedang aktif: jelaskan struktur proyek, dependensi utama, dan potensi bug atau masalah keamanan yang perlu diperhatikan.",
+  },
+  {
+    icon: Sparkles,
+    label: "Otomatisasi Browser",
+    sub: "buka halaman + screenshot",
+    prompt:
+      "Buka https://example.com menggunakan browser, ambil screenshot halaman, lalu jelaskan isi dan struktur halamannya.",
+  },
+];
+
+function sessionShort(model: string): string {
+  if (!model) return "Hermes Agent";
+  return model.length > 34 ? `${model.slice(0, 31)}…` : model;
 }
 
 export const VisualChatView: React.FC<VisualChatViewProps> = ({
+  scopedProfile,
   resumeSessionId,
   onSessionChange,
+  onNewChat,
   onSwitchToTerminal,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [sessionId, setSessionId] = useState<string>(resumeSessionId || "");
   const [isConnected, setIsConnected] = useState(false);
-  const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [model, setModel] = useState("");
+  const [title, setTitle] = useState("");
+  const [showJump, setShowJump] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const closedByUnmountRef = useRef(false);
+  const liveSessionIdRef = useRef("");
+  const activeStoredIdRef = useRef<string | null>(null);
+  const pendingStoredIdRef = useRef("");
+  const loadedResumeRef = useRef<string | null | undefined>(undefined);
+  const pendingLoadRef = useRef<{ id: string; resumeId: string | null } | null>(null);
+  const requestSeqRef = useRef(0);
+  const assistantIdRef = useRef<string | null>(null);
+  const pendingPromptRef = useRef<string | null>(null);
+  const sessionReadyRef = useRef(false);
+  const isGeneratingRef = useRef(false);
+  const scopedProfileRef = useRef(scopedProfile);
+  const onSessionChangeRef = useRef(onSessionChange);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const currentTurnRef = useRef<ChatMessage | null>(null);
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  useEffect(() => {
+    scopedProfileRef.current = scopedProfile;
+  }, [scopedProfile]);
+  useEffect(() => {
+    onSessionChangeRef.current = onSessionChange;
+  }, [onSessionChange]);
+  useEffect(() => {
+    sessionReadyRef.current = sessionReady;
+  }, [sessionReady]);
+  useEffect(() => {
+    isGeneratingRef.current = isGenerating;
+  }, [isGenerating]);
+
+  const sendRequest = useCallback(
+    (method: string, params: Record<string, unknown>): string => {
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return "";
+      const id = `vc_${++requestSeqRef.current}`;
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+      return id;
+    },
+    [],
+  );
+
+  const dispatchLoad = useCallback(
+    (resumeId: string | null) => {
+      const profile = scopedProfileRef.current;
+      const params: Record<string, unknown> = resumeId
+        ? {
+            session_id: resumeId,
+            ...(profile ? { profile } : {}),
+          }
+        : {
+            source: "tui",
+            ...(profile ? { profile } : {}),
+          };
+      const id = sendRequest(
+        resumeId ? "session.resume" : "session.create",
+        params,
+      );
+      if (!id) return;
+      pendingLoadRef.current = { id, resumeId };
+    },
+    [sendRequest],
+  );
+
+  const beginSession = useCallback(
+    (resumeId: string | null) => {
+      setMessages([]);
+      setLoadError(null);
+      setSessionReady(false);
+      setIsGenerating(false);
+      setModel("");
+      setTitle(resumeId ? "" : "Sesi Baru");
+      liveSessionIdRef.current = "";
+      assistantIdRef.current = null;
+      pendingStoredIdRef.current = "";
+      activeStoredIdRef.current = resumeId;
+      pendingLoadRef.current = null;
+
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        pendingLoadRef.current = { id: "", resumeId };
+        return;
+      }
+      dispatchLoad(resumeId);
+    },
+    [dispatchLoad],
+  );
+
+  const hydrateFromRest = useCallback(async (resumeId: string) => {
+    const liveAtStart = liveSessionIdRef.current;
+    try {
+      const response = await api.getSessionMessages(
+        resumeId,
+        scopedProfileRef.current,
+      );
+      if (liveSessionIdRef.current !== liveAtStart) return;
+      const projected = projectHistory(
+        (response.messages || []) as unknown as HistoryRow[],
+      );
+      if (projected.length === 0) return;
+      setMessages((previous) => (previous.length === 0 ? projected : previous));
+    } catch {
+      // Best-effort: a live/unpersisted child has no REST row yet.
+    }
+  }, []);
+
+  const refreshSessionMeta = useCallback((sessionId: string) => {
+    if (!sessionId) return;
+    void api
+      .getSessionDetail(sessionId, scopedProfileRef.current)
+      .then((session) => {
+        if (
+          activeStoredIdRef.current &&
+          activeStoredIdRef.current !== sessionId
+        ) {
+          return;
+        }
+        const nextTitle = normalizeSessionTitle(session.title);
+        if (nextTitle) setTitle(nextTitle);
+        if (session.model) setModel(session.model);
+      })
+      .catch(() => {
+        // Best-effort: a freshly minted session has no row until its first turn.
+      });
+  }, []);
+
+  const handleLoadResult = useCallback(
+    (frame: RpcFrame) => {
+      const pending = pendingLoadRef.current;
+      if (!pending || frame.id !== pending.id) return;
+      pendingLoadRef.current = null;
+
+      if (frame.error) {
+        setLoadError(frame.error.message || "Gagal memuat sesi.");
+        setSessionReady(false);
+        return;
+      }
+
+      const result = frame.result || {};
+      const liveId = result.session_id || "";
+      liveSessionIdRef.current = liveId;
+
+      if (pending.resumeId) {
+        activeStoredIdRef.current = pending.resumeId;
+        loadedResumeRef.current = pending.resumeId;
+        setTitle(result.info?.title || "");
+        refreshSessionMeta(pending.resumeId);
+      } else {
+        pendingStoredIdRef.current = result.stored_session_id || "";
+        activeStoredIdRef.current = null;
+        loadedResumeRef.current = null;
+        setTitle(result.info?.title || "Sesi Baru");
+      }
+
+      setModel(result.info?.model || "");
+      const history = projectHistory(result.messages || []);
+      setMessages(history);
+      setSessionReady(true);
+
+      if (result.running) {
+        const lastAssistant = [...history]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        assistantIdRef.current = lastAssistant?.id || null;
+        setIsGenerating(true);
+      } else {
+        setIsGenerating(false);
+      }
+
+      if (history.length === 0 && (result.message_count || 0) > 0) {
+        void hydrateFromRest(pending.resumeId || activeStoredIdRef.current || "");
+      }
+    },
+    [hydrateFromRest, refreshSessionMeta],
+  );
+
+  const submitPrompt = useCallback(
+    (rawText: string) => {
+      const text = rawText.trim();
+      if (!text || isGeneratingRef.current) return;
+      const sessionId = liveSessionIdRef.current;
+      if (!sessionId) {
+        pendingPromptRef.current = text;
+        return;
+      }
+
+      const now = Date.now();
+      const assistantId = `asst_${now}_${Math.random().toString(36).slice(2, 7)}`;
+      assistantIdRef.current = assistantId;
+
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: `usr_${now}`,
+          role: "user",
+          content: text,
+        },
+        {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+          reasoning: "",
+          actions: [],
+          isStreaming: true,
+          startedAt: now,
+        },
+      ]);
+      setIsGenerating(true);
+      stickToBottomRef.current = true;
+      sendRequest("prompt.submit", { session_id: sessionId, text });
+    },
+    [sendRequest],
+  );
+
+  const ensureAssistant = useCallback((): string => {
+    if (assistantIdRef.current) return assistantIdRef.current;
+    const id = `asst_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    assistantIdRef.current = id;
+    setMessages((previous) => [
+      ...previous,
+      {
+        id,
+        role: "assistant",
+        content: "",
+        reasoning: "",
+        actions: [],
+        isStreaming: true,
+        startedAt: Date.now(),
+      },
+    ]);
+    return id;
+  }, []);
+
+  const updateAssistant = useCallback(
+    (updater: (message: ChatMessage) => ChatMessage) => {
+      const id = ensureAssistant();
+      setMessages((previous) =>
+        previous.map((message) => (message.id === id ? updater(message) : message)),
+      );
+    },
+    [ensureAssistant],
+  );
+
+  const handleEvent = useCallback(
+    (event: RpcEventPayload) => {
+      if (!event || typeof event.type !== "string") return;
+      if (
+        liveSessionIdRef.current &&
+        event.session_id &&
+        event.session_id !== liveSessionIdRef.current
+      ) {
+        return;
+      }
+
+      const payload = event.payload || {};
+      const type = event.type;
+
+      if (type === "thinking.delta" || type === "reasoning.delta") {
+        const delta = typeof payload.text === "string" ? payload.text : "";
+        if (!delta.trim()) return;
+        updateAssistant((message) => ({
+          ...message,
+          reasoning: `${message.reasoning || ""}${delta}`,
+          isStreaming: true,
+        }));
+        return;
+      }
+
+      if (type === "reasoning.available") {
+        const text = typeof payload.text === "string" ? payload.text : "";
+        if (!text.trim()) return;
+        updateAssistant((message) =>
+          (message.reasoning || "").trim()
+            ? message
+            : { ...message, reasoning: text },
+        );
+        return;
+      }
+
+      if (type === "tool.start") {
+        const name = payload.name || "tool";
+        const toolId = payload.tool_id || `tool_${Date.now()}`;
+        const action: ActionInfo = {
+          id: toolId,
+          type: "",
+          label: name,
+          subject: formatToolSubject(name, payload.context, payload.args),
+          status: "running",
+          startedAt: Date.now(),
+        };
+        updateAssistant((message) => ({
+          ...message,
+          isStreaming: true,
+          actions: [...(message.actions || []), action],
+        }));
+        return;
+      }
+
+      if (type === "tool.complete") {
+        const name = payload.name || "tool";
+        const toolId = payload.tool_id || "";
+        const output = formatToolOutput(payload.result);
+        const isError =
+          Boolean(payload.error) ||
+          payload.status === "error" ||
+          isToolResultError(payload.result);
+        const durationMs =
+          typeof payload.duration_s === "number"
+            ? Math.round(payload.duration_s * 1000)
+            : undefined;
+        const subject = formatToolSubject(name, payload.context, payload.args);
+
+        updateAssistant((message) => {
+          const actions = [...(message.actions || [])];
+          const index = actions.findIndex((action) => action.id === toolId);
+          if (index >= 0) {
+            const current = actions[index];
+            actions[index] = {
+              ...current,
+              status: "done",
+              isError,
+              output,
+              subject: subject || current.subject,
+              durationMs:
+                durationMs ??
+                (current.startedAt ? Date.now() - current.startedAt : undefined),
+            };
+          } else {
+            actions.push({
+              id: toolId || `tool_${Date.now()}`,
+              type: "",
+              label: name,
+              subject,
+              status: "done",
+              output,
+              isError,
+              durationMs,
+            });
+          }
+          return { ...message, actions };
+        });
+        return;
+      }
+
+      if (type === "message.delta") {
+        const delta = typeof payload.text === "string" ? payload.text : "";
+        if (!delta) return;
+        updateAssistant((message) => ({
+          ...message,
+          content: `${message.content || ""}${delta}`,
+          isStreaming: true,
+        }));
+        return;
+      }
+
+      if (type === "message.complete") {
+        const id = ensureAssistant();
+        const finalText = typeof payload.text === "string" ? payload.text : "";
+        const failed = payload.status === "error";
+        setIsGenerating(false);
+
+        setMessages((previous) =>
+          previous.map((message) => {
+            if (message.id !== id) return message;
+            const content = message.content || finalText;
+            return {
+              ...message,
+              content,
+              isStreaming: false,
+              latencyMs: message.startedAt
+                ? Date.now() - message.startedAt
+                : undefined,
+              error: failed
+                ? payload.error || payload.message || "Terjadi kesalahan pada model."
+                : undefined,
+            };
+          }),
+        );
+
+        assistantIdRef.current = null;
+
+        if (!activeStoredIdRef.current && pendingStoredIdRef.current) {
+          activeStoredIdRef.current = pendingStoredIdRef.current;
+          loadedResumeRef.current = pendingStoredIdRef.current;
+          onSessionChangeRef.current?.(pendingStoredIdRef.current);
+        }
+        const storedId =
+          activeStoredIdRef.current || pendingStoredIdRef.current;
+        if (storedId) {
+          refreshSessionMeta(storedId);
+          window.setTimeout(() => refreshSessionMeta(storedId), 1200);
+        }
+        return;
+      }
+
+      if (type === "session.info") {
+        if (typeof payload.model === "string" && payload.model.trim()) {
+          setModel(payload.model);
+        }
+        if (typeof payload.title === "string" && payload.title.trim()) {
+          setTitle(payload.title);
+        }
+        if (
+          typeof payload.stored_session_id === "string" &&
+          payload.stored_session_id &&
+          !activeStoredIdRef.current
+        ) {
+          pendingStoredIdRef.current = payload.stored_session_id;
+        }
+        return;
+      }
+
+      if (type === "error") {
+        const text = payload.message || payload.error || "Terjadi kesalahan.";
+        setIsGenerating(false);
+        updateAssistant((message) => ({
+          ...message,
+          isStreaming: false,
+          error: text,
+        }));
+      }
+    },
+    [ensureAssistant, refreshSessionMeta, updateAssistant],
+  );
+
+  const handleFrame = useCallback(
+    (frame: RpcFrame) => {
+      if (frame.method === "event") {
+        if (frame.params) handleEvent(frame.params);
+        return;
+      }
+      if (frame.id && pendingLoadRef.current?.id === frame.id) {
+        handleLoadResult(frame);
+        return;
+      }
+      if (frame.error) {
+        setIsGenerating(false);
+        updateAssistant((message) => ({
+          ...message,
+          isStreaming: false,
+          error: frame.error?.message || "Permintaan gagal diproses.",
+        }));
+      }
+    },
+    [handleEvent, handleLoadResult, updateAssistant],
+  );
+
+  const handleFrameRef = useRef(handleFrame);
+  useEffect(() => {
+    handleFrameRef.current = handleFrame;
+  }, [handleFrame]);
+
+  useEffect(() => {
+    closedByUnmountRef.current = false;
+    let cancelled = false;
+
+    const open = async (): Promise<void> => {
+      if (cancelled || closedByUnmountRef.current) return;
+      if (
+        wsRef.current &&
+        (wsRef.current.readyState === WebSocket.OPEN ||
+          wsRef.current.readyState === WebSocket.CONNECTING)
+      ) {
+        return;
+      }
+
+      let url: string;
+      try {
+        url = await api.buildWsUrl("/api/ws");
+      } catch (error) {
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Tidak dapat membuka koneksi.",
+        );
+        return;
+      }
+
+      if (cancelled || closedByUnmountRef.current) return;
+
+      const socket = new WebSocket(url);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        setIsConnected(true);
+        setLoadError(null);
+        reconnectAttemptsRef.current = 0;
+
+        if (pendingLoadRef.current) {
+          const resumeId = pendingLoadRef.current.resumeId;
+          pendingLoadRef.current = null;
+          dispatchLoad(resumeId);
+          return;
+        }
+        if (activeStoredIdRef.current) {
+          dispatchLoad(activeStoredIdRef.current);
+          return;
+        }
+        if (!liveSessionIdRef.current) {
+          dispatchLoad(null);
+        }
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          handleFrameRef.current(JSON.parse(event.data) as RpcFrame);
+        } catch (error) {
+          console.error("[VisualChatView] parse error", error);
+        }
+      };
+
+      socket.onerror = () => {
+        setIsConnected(false);
+      };
+
+      socket.onclose = () => {
+        setIsConnected(false);
+        wsRef.current = null;
+        if (cancelled || closedByUnmountRef.current) return;
+        const attempt = reconnectAttemptsRef.current;
+        if (attempt >= 6) return;
+        reconnectAttemptsRef.current = attempt + 1;
+        reconnectTimerRef.current = window.setTimeout(() => {
+          reconnectTimerRef.current = null;
+          void open();
+        }, Math.min(1000 * 2 ** attempt, 8000));
+      };
+    };
+
+    void open();
+
+    return () => {
+      cancelled = true;
+      closedByUnmountRef.current = true;
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+  }, [dispatchLoad]);
+
+  useEffect(() => {
+    const desired = resumeSessionId || null;
+    if (loadedResumeRef.current === desired) return;
+    loadedResumeRef.current = desired;
+    beginSession(desired);
+  }, [resumeSessionId, beginSession]);
+
+  const scrollToBottom = useCallback((smooth = false) => {
+    const element = scrollRef.current;
+    if (!element) return;
+    stickToBottomRef.current = true;
+    setShowJump(false);
+    element.scrollTo({
+      top: element.scrollHeight,
+      behavior: smooth ? "smooth" : "auto",
+    });
   }, []);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
+    if (!stickToBottomRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const element = scrollRef.current;
+      if (element) element.scrollTop = element.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages]);
 
-  // Connect WebSocket to /api/ws
-  useEffect(() => {
-    const token = (window as any).__HERMES_SESSION_TOKEN__ || "";
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${location.host}/api/ws?token=${token}`;
+  const handleScroll = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const distance =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    const atBottom = distance < 80;
+    stickToBottomRef.current = atBottom;
+    setShowJump(!atBottom);
+  }, []);
 
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setIsConnected(true);
-      if (!sessionId) {
-        ws.send(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: "init_session",
-            method: "session.create",
-            params: {},
-          })
-        );
-      } else {
-        ws.send(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: "history_session",
-            method: "session.history",
-            params: { session_id: sessionId },
-          })
-        );
-      }
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        // Handle session.create response
-        if (data.id === "init_session" && data.result?.session_id) {
-          const sid = data.result.session_id;
-          setSessionId(sid);
-          if (onSessionChange) onSessionChange(sid);
-          return;
-        }
-
-        // Handle session.history response
-        if (data.id === "history_session" && data.result?.messages) {
-          const past: ChatMessage[] = data.result.messages.map((m: any, idx: number) => ({
-            id: `hist_${idx}`,
-            role: m.role === "assistant" ? "assistant" : "user",
-            content: m.content || m.text || "",
-            actions: [],
-          }));
-          if (past.length > 0) {
-            setMessages(past);
-          }
-          return;
-        }
-
-        // Handle streaming events
-        if (data.params && typeof data.params === "object") {
-          const type = data.params.type;
-          const payload = data.params.payload || {};
-
-          // 1. Thinking / Reasoning
-          if (type === "thinking.delta" || type === "reasoning.delta") {
-            const delta = payload.text || "";
-            if (delta) {
-              setMessages((prev) => {
-                const next = [...prev];
-                const last = next[next.length - 1];
-                if (last && last.role === "assistant") {
-                  last.reasoning = (last.reasoning || "") + delta;
-                }
-                return next;
-              });
-            }
-          }
-
-          // 2. Tool Start -> add LiveActionCard
-          else if (type === "tool.start") {
-            const toolId = payload.tool_id || `tool_${Date.now()}`;
-            const name = payload.name || "tool";
-            const typeInfo = mapToolType(name);
-            const subject = formatSubject(name, payload.context, payload.args);
-
-            const newAction: ActionInfo = {
-              id: toolId,
-              label: name,
-              type: typeInfo.label,
-              subject: subject,
-              status: "running",
-              startedAt: Date.now(),
-            };
-
-            setMessages((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                last.actions = [...(last.actions || []), newAction];
-              }
-              return next;
-            });
-          }
-
-          // 3. Tool Complete -> finalize LiveActionCard
-          else if (type === "tool.complete") {
-            const toolId = payload.tool_id;
-            const durationMs =
-              payload.duration_s !== undefined ? Math.round(payload.duration_s * 1000) : 0;
-            const output = formatOutput(payload.result);
-            const isError = Boolean(payload.result?.error || payload.error);
-
-            setMessages((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant" && last.actions) {
-                last.actions = last.actions.map((act) => {
-                  if (act.id === toolId) {
-                    return {
-                      ...act,
-                      status: "done",
-                      durationMs,
-                      output,
-                      details: output,
-                      isError,
-                    };
-                  }
-                  return act;
-                });
-              }
-              return next;
-            });
-          }
-
-          // 4. Message Delta -> stream token
-          else if (type === "message.delta") {
-            const delta = payload.text || "";
-            if (delta) {
-              setMessages((prev) => {
-                const next = [...prev];
-                const last = next[next.length - 1];
-                if (last && last.role === "assistant") {
-                  last.content = (last.content || "") + delta;
-                }
-                return next;
-              });
-            }
-          }
-
-          // 5. Message Complete -> finish turn
-          else if (type === "message.complete") {
-            setIsGenerating(false);
-            setMessages((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                last.isStreaming = false;
-              }
-              return next;
-            });
-          }
-
-          // 6. Error event
-          else if (type === "error") {
-            setIsGenerating(false);
-            const errText = payload.message || "Error during execution";
-            setMessages((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                last.content = (last.content || "") + `\n\n> ⚠️ **Error:** ${errText}`;
-                last.isStreaming = false;
-              }
-              return next;
-            });
-          }
-        }
-      } catch (err) {
-        console.error("[VisualChatView] Parse error:", err);
-      }
-    };
-
-    ws.onclose = () => {
-      setIsConnected(false);
-    };
-
-    return () => {
-      ws.close();
-    };
-  }, [sessionId, onSessionChange]);
-
-  const handleSend = () => {
-    if (!input.trim() || isGenerating || !wsRef.current || !isConnected) return;
+  const handleSend = useCallback(() => {
     const text = input.trim();
+    if (!text || isGenerating) return;
     setInput("");
-
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
+    if (!sessionReadyRef.current || !liveSessionIdRef.current) {
+      pendingPromptRef.current = text;
+      return;
+    }
+    submitPrompt(text);
+  }, [input, isGenerating, submitPrompt]);
 
-    const userMessage: ChatMessage = {
-      id: `usr_${Date.now()}`,
-      role: "user",
-      content: text,
-    };
-
-    const assistantTurn: ChatMessage = {
-      id: `asst_${Date.now()}`,
-      role: "assistant",
-      content: "",
-      reasoning: "",
-      actions: [],
-      isStreaming: true,
-    };
-
-    currentTurnRef.current = assistantTurn;
-    setMessages((prev) => [...prev, userMessage, assistantTurn]);
-    setIsGenerating(true);
-
-    wsRef.current.send(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: `submit_${Date.now()}`,
-        method: "prompt.submit",
-        params: {
-          session_id: sessionId,
-          text: text,
-        },
-      })
-    );
-  };
-
-  const handleStop = () => {
-    if (!isGenerating || !wsRef.current || !sessionId) return;
-    wsRef.current.send(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: `stop_${Date.now()}`,
-        method: "session.interrupt",
-        params: { session_id: sessionId },
-      })
-    );
+  const handleStop = useCallback(() => {
+    const sessionId = liveSessionIdRef.current;
+    if (!sessionId) return;
+    sendRequest("session.interrupt", { session_id: sessionId });
     setIsGenerating(false);
-  };
+    setMessages((previous) =>
+      previous.map((message) =>
+        message.id === assistantIdRef.current
+          ? { ...message, isStreaming: false }
+          : message,
+      ),
+    );
+  }, [sendRequest]);
 
-  const handleNewChat = () => {
-    if (wsRef.current && isConnected) {
-      setMessages([]);
-      wsRef.current.send(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: "init_session",
-          method: "session.create",
-          params: {},
-        })
-      );
+  const handleNewChat = useCallback(() => {
+    if (isGeneratingRef.current && liveSessionIdRef.current) {
+      sendRequest("session.interrupt", {
+        session_id: liveSessionIdRef.current,
+      });
     }
-  };
+    loadedResumeRef.current = null;
+    activeStoredIdRef.current = null;
+    beginSession(null);
+    onNewChat?.();
+  }, [beginSession, onNewChat, sendRequest]);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
+  const handleRetryLoad = useCallback(() => {
+    beginSession(loadedResumeRef.current ?? null);
+  }, [beginSession]);
 
-  const toggleThinking = (id: string) => {
-    setThinkingOpen((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
+  const handleQuickWorkflow = useCallback(
+    (prompt: string) => {
+      setInput("");
+      if (!sessionReadyRef.current || !liveSessionIdRef.current) {
+        pendingPromptRef.current = prompt;
+        return;
+      }
+      submitPrompt(prompt);
+    },
+    [submitPrompt],
+  );
+
+  const handleComposerKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        handleSend();
+      }
+    },
+    [handleSend],
+  );
+
+  useEffect(() => {
+    const element = textareaRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
+  }, [input]);
+
+  useEffect(() => {
+    const queued = pendingPromptRef.current;
+    if (!queued || !sessionReady || !liveSessionIdRef.current) return;
+    pendingPromptRef.current = null;
+    submitPrompt(queued);
+  }, [sessionReady, submitPrompt]);
+
+  const userCount = useMemo(
+    () => messages.filter((message) => message.role === "user").length,
+    [messages],
+  );
+
+  const loading = !sessionReady && messages.length === 0;
+  const lastMessageIndex = messages.length - 1;
 
   return (
-    <div className="flex flex-col h-full w-full bg-slate-950 text-slate-100 rounded-lg overflow-hidden border border-slate-800">
-      {/* Header Bar */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900/90 border-b border-slate-800 backdrop-blur shrink-0 text-xs">
-        <div className="flex items-center gap-3">
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-semibold">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                isConnected ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : "bg-amber-400"
-              }`}
-            />
-            <span>{isConnected ? "Online · Siap" : "Menghubungkan..."}</span>
-          </div>
-          <div className="hidden sm:flex items-center gap-2 text-slate-400">
-            <span className="inline-flex items-center gap-1 text-slate-300 font-medium">
-              <Cpu className="w-3.5 h-3.5 text-emerald-400" />
-              Hermes Agent
-            </span>
-            <span>·</span>
-            <span className="text-slate-400">9Router (Gemini Flash)</span>
+    <div className="veechat flex h-full w-full flex-col overflow-hidden bg-[var(--vc-bg)]">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--vc-border)] px-3 py-2 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${
+              isConnected
+                ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.75)]"
+                : "bg-amber-400"
+            }`}
+          />
+          <div className="min-w-0">
+            <div className="truncate font-sans text-[12.5px] font-medium text-[var(--vc-fg)]">
+              {title || (resumeSessionId ? "Percakapan" : "Sesi Baru")}
+            </div>
+            <div className="flex items-center gap-1.5 font-sans text-[10px] text-[var(--vc-muted-fg)]">
+              <span className="inline-flex items-center gap-1">
+                <Cpu className="h-2.5 w-2.5" />
+                {sessionShort(model)}
+              </span>
+              <span className="opacity-40">·</span>
+              <span>
+                {isConnected
+                  ? isGenerating
+                    ? "Sedang bekerja"
+                    : "Siap"
+                  : "Menyambungkan…"}
+              </span>
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* New Chat Button */}
+        <div className="flex shrink-0 items-center gap-1.5">
           <button
+            type="button"
             onClick={handleNewChat}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 transition-colors"
-            title="Mulai Sesi Chat Baru"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)] px-2.5 py-1 font-sans text-[11px] font-medium text-[var(--vc-fg)] transition-colors hover:bg-[var(--vc-secondary)]"
+            title="Mulai sesi chat baru"
           >
-            <PlusCircle className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="hidden min-[500px]:inline">Sesi Baru</span>
+            <Plus className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
+            <span className="hidden min-[520px]:inline">Sesi Baru</span>
           </button>
 
-          {/* Mode Switcher */}
-          <div className="flex items-center p-0.5 rounded-lg bg-black/40 border border-slate-800">
-            <button
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-semibold text-xs bg-emerald-600 text-white shadow-sm"
-              title="Tampilan Visual Modern"
-            >
-              <Sparkles className="w-3 h-3 text-emerald-200" />
+          <div className="flex items-center rounded-lg border border-[var(--vc-border)] bg-[var(--vc-sidebar)] p-0.5 font-sans text-[11px]">
+            <span className="inline-flex items-center gap-1 rounded-md bg-[var(--vc-secondary)] px-2 py-0.5 font-semibold text-[var(--vc-fg)] shadow-sm">
+              <Sparkles className="h-3 w-3 text-[var(--vc-primary)]" />
               <span>Visual</span>
-            </button>
+            </span>
             {onSwitchToTerminal && (
               <button
+                type="button"
                 onClick={onSwitchToTerminal}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 transition-colors"
-                title="Beralih ke Terminal CLI Asli"
+                className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[var(--vc-muted-fg)] transition-colors hover:bg-[var(--vc-secondary)]/60 hover:text-[var(--vc-fg)]"
+                title="Beralih ke terminal CLI"
               >
-                <TerminalIcon className="w-3 h-3" />
+                <TerminalIcon className="h-3 w-3" />
                 <span>CLI</span>
               </button>
             )}
           </div>
         </div>
-      </div>
+      </header>
 
-      {/* Message List */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-        {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center max-w-md mx-auto text-center space-y-4 my-auto py-12">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 shadow-lg shadow-emerald-500/20">
-              <Bot className="w-6 h-6" />
-            </div>
-            <div className="space-y-1.5">
-              <h3 className="text-base font-semibold text-white">Hermes Autonomous Agent</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Tampilan chat visual modern dengan kartu <strong>LiveActionCard</strong>, hitungan
-                detik eksekusi tool, dan alur pemikiran real-time.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2 justify-center pt-2">
-              {[
-                "Cek direktori dan status server VPS",
-                "Buka browser ZenRows dan cek koneksi",
-                "Jalankan uptime terminal dan memory",
-                "Cari berita AI terbaru di internet",
-              ].map((pill, i) => (
-                <button
-                  key={i}
-                  onClick={() => {
-                    setInput(pill);
-                    if (textareaRef.current) textareaRef.current.focus();
-                  }}
-                  className="px-3 py-1.5 rounded-full bg-slate-900 hover:bg-emerald-950/60 border border-slate-800 hover:border-emerald-500/40 text-xs text-slate-300 hover:text-emerald-300 transition-colors"
-                >
-                  {pill}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          messages.map((msg) => (
-            <div key={msg.id} className="w-full">
-              {msg.role === "user" ? (
-                <div className="flex justify-end">
-                  <div className="max-w-[85%] bg-slate-800 border border-slate-700/60 text-slate-100 px-4 py-3 rounded-2xl rounded-tr-sm text-sm leading-relaxed shadow-sm">
-                    {msg.content}
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="h-full overflow-y-auto overscroll-contain"
+        >
+          {loading ? (
+            <div className="flex min-h-full flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+              {loadError ? (
+                <>
+                  <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 font-sans text-xs text-red-300">
+                    {loadError}
                   </div>
-                </div>
+                  <button
+                    type="button"
+                    onClick={handleRetryLoad}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--vc-primary)] px-3 py-1.5 font-sans text-xs font-semibold text-white transition-colors hover:bg-[var(--vc-primary-hover)]"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Coba lagi
+                  </button>
+                </>
               ) : (
-                <div className="flex flex-col items-start gap-2.5 max-w-full">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
-                    <Bot className="w-4 h-4" />
-                    <span>Hermes Agent</span>
+                <>
+                  <VeeSpinner size={22} className="text-[var(--vc-primary)]" />
+                  <div className="font-sans text-xs text-[var(--vc-muted-fg)]">
+                    Menyiapkan sesi visual…
                   </div>
-
-                  {/* Thinking Section */}
-                  {msg.reasoning && (
-                    <div className="w-full rounded-lg border border-slate-800/80 bg-slate-900/50 overflow-hidden text-xs">
-                      <div
-                        onClick={() => toggleThinking(msg.id)}
-                        className="flex items-center justify-between px-3 py-2 cursor-pointer select-none text-slate-400 hover:text-slate-200"
-                      >
-                        <span className="flex items-center gap-2 font-medium">
-                          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee]" />
-                          Alur Pemikiran (Reasoning)
-                        </span>
-                        {thinkingOpen[msg.id] ? (
-                          <ChevronUp className="w-3.5 h-3.5" />
-                        ) : (
-                          <ChevronDown className="w-3.5 h-3.5" />
-                        )}
-                      </div>
-                      {thinkingOpen[msg.id] && (
-                        <div className="p-3 border-t border-slate-800 font-mono text-[11.5px] leading-relaxed text-slate-400 bg-black/40 max-h-56 overflow-y-auto whitespace-pre-wrap break-all">
-                          {msg.reasoning}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Live Action Timeline */}
-                  {msg.actions && msg.actions.length > 0 && (
-                    <div className="w-full space-y-2 my-1">
-                      {msg.actions.map((act) => (
-                        <LiveActionCard key={act.id} action={act} />
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Markdown Answer */}
-                  {msg.content ? (
-                    <div className="w-full text-sm leading-relaxed text-slate-200">
-                      <Markdown content={msg.content} streaming={msg.isStreaming} />
-                    </div>
-                  ) : msg.isStreaming ? (
-                    <div className="flex items-center gap-2 text-xs text-emerald-400 py-1">
-                      <div className="w-3 h-3 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
-                      <span>Sedang memproses...</span>
-                    </div>
-                  ) : null}
-                </div>
+                </>
               )}
             </div>
-          ))
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+          ) : messages.length === 0 ? (
+            <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col justify-center px-4 py-8 font-sans sm:px-6">
+              <div className="space-y-2.5 pb-4 text-left">
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)] px-2.5 py-1 font-medium text-[var(--vc-fg)]">
+                    <Cpu className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
+                    {sessionShort(model)}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)] px-2.5 py-1 font-medium text-[var(--vc-fg)]">
+                    <ShieldCheck className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
+                    Tool aktif
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)] px-2.5 py-1 font-medium text-[var(--vc-fg)]">
+                    <Sparkles className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
+                    Visual mode
+                  </span>
+                </div>
 
-      {/* Composer Bar */}
-      <div className="p-3 sm:p-4 bg-slate-900/95 border-t border-slate-800 backdrop-blur shrink-0 space-y-2">
-        <div className="flex items-end gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 focus-within:border-emerald-500 focus-within:ring-1 focus-within:ring-emerald-500/30 transition-all">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              e.target.style.height = "auto";
-              e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`;
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder="Tanyakan apa saja atau perintahkan Hermes menjalankan tool..."
-            rows={1}
-            className="flex-1 bg-transparent border-none outline-none resize-none text-sm text-slate-100 placeholder-slate-500 leading-relaxed max-h-44 py-1"
-          />
-          {isGenerating ? (
-            <button
-              onClick={handleStop}
-              className="p-2 rounded-lg bg-red-600 hover:bg-red-500 text-white shrink-0 transition-colors"
-              title="Hentikan Proses (Stop)"
-            >
-              <Square className="w-4 h-4 fill-current" />
-            </button>
+                <h2 className="vc-serif pt-1 text-xl font-semibold tracking-tight text-[var(--vc-fg)] sm:text-2xl">
+                  Ruang Kerja Teknis &amp; Otomasi
+                </h2>
+                <p className="max-w-xl text-[11.5px] leading-relaxed text-[var(--vc-muted-fg)]">
+                  Pilih alur cepat di bawah atau tulis instruksi langsung. Hermes akan
+                  menampilkan pemikiran, aksi tool, dan hasilnya secara real-time.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                {WORKFLOWS.map((item) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    onClick={() => handleQuickWorkflow(item.prompt)}
+                    className="group flex items-center gap-3 rounded-xl border border-[var(--vc-border)] bg-[var(--vc-card)]/80 p-3 text-left transition-colors hover:border-[rgb(204_120_92_/_0.5)] hover:bg-[var(--vc-secondary)]/50"
+                  >
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[rgb(204_120_92_/_0.2)] bg-[rgb(204_120_92_/_0.1)] text-[var(--vc-primary)]">
+                      <item.icon className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-semibold text-[var(--vc-fg)] transition-colors group-hover:text-[var(--vc-primary)]">
+                        {item.label}
+                      </div>
+                      <div className="truncate font-mono text-[10.5px] text-[var(--vc-muted-fg)]">
+                        {item.sub}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
           ) : (
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || !isConnected}
-              className="p-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 text-white shrink-0 transition-colors"
-              title="Kirim Pesan (Enter)"
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            <div className="flex flex-col">
+              {messages.map((message, index) =>
+                message.role === "user" ? (
+                  <UserMessage key={message.id} message={message} />
+                ) : (
+                  <AssistantMessage
+                    key={message.id}
+                    message={message}
+                    isLive={
+                      Boolean(message.isStreaming) ||
+                      (isGenerating && index === lastMessageIndex)
+                    }
+                  />
+                ),
+              )}
+              <div className="h-4" />
+            </div>
           )}
         </div>
-        <div className="flex items-center justify-between text-[11px] text-slate-500 px-1">
-          <span className="flex items-center gap-1.5">
-            <Layers className="w-3 h-3 text-emerald-400" />
-            Simular Box Cloud (38 Tools) Aktif
-          </span>
-          <span>Tekan <strong>Enter</strong> untuk kirim, <strong>Shift+Enter</strong> baris baru</span>
+
+        {showJump && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom(true)}
+            className="absolute bottom-3 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--vc-border)] bg-[var(--vc-card)]/95 px-3 py-1.5 font-sans text-[10.5px] font-medium text-[var(--vc-fg)] shadow-lg backdrop-blur transition-colors hover:border-[rgb(204_120_92_/_0.5)]"
+          >
+            <ArrowDown className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
+            Pesan terbaru
+          </button>
+        )}
+      </div>
+
+      <div className="shrink-0 px-3 pb-3 pt-1 sm:px-6">
+        <div className="mx-auto w-full max-w-3xl">
+          <form
+            className="vc-composer rounded-2xl"
+            onSubmit={(event) => {
+              event.preventDefault();
+              handleSend();
+            }}
+          >
+            <div className="px-3.5 pb-1 pt-2.5">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={handleComposerKeyDown}
+                placeholder="Kirim instruksi ke Hermes…"
+                rows={1}
+                className="max-h-[180px] w-full resize-none bg-transparent text-sm leading-relaxed text-[var(--vc-fg)] outline-none placeholder:text-[var(--vc-muted-fg)]/60"
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-0.5">
+              <div className="flex min-w-0 items-center gap-1">
+                <span
+                  className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 font-sans text-[11px] font-medium text-[var(--vc-muted-fg)]"
+                  title={model || "Hermes Agent"}
+                >
+                  <Cpu className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
+                  <span className="max-w-[10rem] truncate">
+                    {sessionShort(model)}
+                  </span>
+                </span>
+                {userCount > 0 && (
+                  <span className="hidden items-center gap-1 rounded-lg px-2 font-mono text-[10px] text-[var(--vc-muted-fg)]/70 sm:inline-flex">
+                    {userCount} giliran
+                  </span>
+                )}
+              </div>
+
+              <div className="flex shrink-0 items-center gap-1.5">
+                <span className="hidden font-sans text-[10px] text-[var(--vc-muted-fg)]/70 sm:inline">
+                  Enter kirim · Shift+Enter baris baru
+                </span>
+                {isGenerating ? (
+                  <button
+                    type="button"
+                    onClick={handleStop}
+                    className="inline-flex h-7 items-center gap-1 rounded-lg bg-red-500 px-2.5 font-sans text-[11px] font-medium text-white transition-colors hover:bg-red-400"
+                    title="Hentikan proses"
+                  >
+                    <Square className="h-3 w-3 fill-current" />
+                    <span>Hentikan</span>
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={!input.trim()}
+                    className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--vc-primary)] text-white transition-colors hover:bg-[var(--vc-primary-hover)] disabled:pointer-events-none disabled:opacity-30"
+                    title="Kirim pesan"
+                  >
+                    <ArrowUp className="h-4 w-4 stroke-[2.4]" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </form>
+
+          <div className="flex items-center justify-between px-1 pt-1.5 font-sans text-[10px] text-[var(--vc-muted-fg)]/70">
+            <span className="inline-flex items-center gap-1.5">
+              <Wrench className="h-3 w-3" />
+              Live action · tool timeline
+            </span>
+            <span>
+              {isConnected ? "Terhubung" : "Menyambungkan…"}
+              {sessionReady ? "" : " · memuat"}
+            </span>
+          </div>
         </div>
       </div>
     </div>
