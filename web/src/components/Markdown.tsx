@@ -4,7 +4,8 @@ import { ManagedImage } from "./ManagedImage";
 
 /**
  * Lightweight markdown renderer for LLM output.
- * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
+ * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules, tables.
+ * Leaked ai-chat tool tags (e.g. [KIRIM_FILE: ...]) are stripped outside code blocks.
  * NOT a full CommonMark parser — optimized for typical assistant message patterns.
  *
  * `streaming` renders a blinking caret at the tail of the last block so it
@@ -20,7 +21,10 @@ export function Markdown({
   highlightTerms?: string[];
   streaming?: boolean;
 }) {
-  const blocks = useMemo(() => parseBlocks(content), [content]);
+  const blocks = useMemo(
+    () => parseBlocks(stripToolTagsFromText(content)),
+    [content],
+  );
   const caret = streaming ? <StreamingCaret /> : null;
 
   return (
@@ -56,11 +60,81 @@ type BlockNode =
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
   | { type: "list"; ordered: boolean; items: string[] }
+  | {
+      type: "table";
+      header: string[];
+      align: ("left" | "center" | "right")[];
+      rows: string[][];
+    }
   | { type: "paragraph"; content: string };
 
 /* ------------------------------------------------------------------ */
 /*  Block parser                                                       */
 /* ------------------------------------------------------------------ */
+
+// ai-chat tool tags the model sometimes leaks into prose (e.g. right after
+// sending a file). They mean nothing in Hermes: hide them instead of
+// showing raw tags in the chat. Closed list on purpose — ordinary bracketed
+// prose like [Update] or [1] is left untouched.
+const TOOL_TAG_NAMES = [
+  "KIRIM_FILE",
+  "KIRIM_AUDIO",
+  "KIRIM_VIDEO",
+  "KIRIM_FOTO",
+  "KIRIM_GAMBAR",
+  "KIRIM_DOKUMEN",
+  "AMBIL_SUBTITEL",
+  "AMBIL_HALAMAN",
+  "BROWSER",
+  "RUN_BASH",
+  "RUN_PYTHON",
+  "BACA_FILE",
+  "EDIT_FILE",
+  "BUAT_FILE",
+  "HAPUS_FILE",
+];
+const TOOL_TAG_RE = new RegExp(
+  `\\[(?:${TOOL_TAG_NAMES.join("|")})(?::[^\\]\n]*)?\\]`,
+  "g",
+);
+
+/** Remove leaked tool tags outside fenced code blocks. */
+function stripToolTagsFromText(text: string): string {
+  let inFence = false;
+  return text
+    .split("\n")
+    .map((line) => {
+      if (/^```/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      return inFence ? line : line.replace(TOOL_TAG_RE, "");
+    })
+    .join("\n");
+}
+
+function isTableSeparator(line: string): boolean {
+  if (!line.includes("|")) return false;
+  if (!/^\s*\|?[\s:|-]+\|?\s*$/.test(line)) return false;
+  return line
+    .split("|")
+    .some((cell) => /^\s*:?-{2,}:\s*$/.test(cell));
+}
+
+function splitTableRow(line: string): string[] {
+  let row = line.trim();
+  if (row.startsWith("|")) row = row.slice(1);
+  if (row.endsWith("|")) row = row.slice(0, -1);
+  return row
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.replace(/\\\|/g, "|").trim());
+}
+
+function isTableStart(lines: string[], i: number): boolean {
+  if (i + 1 >= lines.length) return false;
+  if (!lines[i].includes("|")) return false;
+  return isTableSeparator(lines[i + 1]);
+}
 
 function parseBlocks(text: string): BlockNode[] {
   const lines = text.split("\n");
@@ -104,12 +178,56 @@ function parseBlocks(text: string): BlockNode[] {
       continue;
     }
 
+    // GFM table: header row + separator row + body rows
+    if (isTableStart(lines, i)) {
+      const header = splitTableRow(lines[i]);
+      const separatorCells = splitTableRow(lines[i + 1]);
+      const align: ("left" | "center" | "right")[] = separatorCells.map(
+        (cell) => {
+          const left = cell.startsWith(":");
+          const right = cell.endsWith(":");
+          if (left && right) return "center";
+          if (right) return "right";
+          return "left";
+        },
+      );
+      const rows: string[][] = [];
+      i += 2;
+      while (
+        i < lines.length &&
+        lines[i].trim() !== "" &&
+        lines[i].includes("|")
+      ) {
+        const row = splitTableRow(lines[i]);
+        while (row.length < header.length) row.push("");
+        rows.push(row.slice(0, header.length));
+        i++;
+      }
+      blocks.push({ type: "table", header, align, rows });
+      continue;
+    }
+
     // Unordered list
     if (/^[-*+]\s/.test(line)) {
       const items: string[] = [];
       while (i < lines.length && /^[-*+]\s/.test(lines[i])) {
-        items.push(lines[i].replace(/^[-*+]\s/, ""));
+        let item = lines[i].replace(/^[-*+]\s/, "");
         i++;
+        // Indented continuation lines belong to this item, not to a new
+        // ragged paragraph below the list.
+        while (
+          i < lines.length &&
+          lines[i].trim() !== "" &&
+          /^[ \t]/.test(lines[i]) &&
+          !/^[-*+]\s/.test(lines[i].trimStart()) &&
+          !/^\d+[.)]\s/.test(lines[i].trimStart()) &&
+          !lines[i].trimStart().startsWith("```") &&
+          !isTableStart(lines, i)
+        ) {
+          item += "\n" + lines[i].trim();
+          i++;
+        }
+        items.push(item);
       }
       blocks.push({ type: "list", ordered: false, items });
       continue;
@@ -119,8 +237,22 @@ function parseBlocks(text: string): BlockNode[] {
     if (/^\d+[.)]\s/.test(line)) {
       const items: string[] = [];
       while (i < lines.length && /^\d+[.)]\s/.test(lines[i])) {
-        items.push(lines[i].replace(/^\d+[.)]\s/, ""));
+        let item = lines[i].replace(/^\d+[.)]\s/, "");
         i++;
+        // Indented continuation lines belong to this item.
+        while (
+          i < lines.length &&
+          lines[i].trim() !== "" &&
+          /^[ \t]/.test(lines[i]) &&
+          !/^[-*+]\s/.test(lines[i].trimStart()) &&
+          !/^\d+[.)]\s/.test(lines[i].trimStart()) &&
+          !lines[i].trimStart().startsWith("```") &&
+          !isTableStart(lines, i)
+        ) {
+          item += "\n" + lines[i].trim();
+          i++;
+        }
+        items.push(item);
       }
       blocks.push({ type: "list", ordered: true, items });
       continue;
@@ -141,9 +273,12 @@ function parseBlocks(text: string): BlockNode[] {
       !lines[i].match(/^#{1,4}\s/) &&
       !lines[i].match(/^[-*+]\s/) &&
       !lines[i].match(/^\d+[.)]\s/) &&
-      !lines[i].match(/^[-*_]{3,}\s*$/)
+      !lines[i].match(/^[-*_]{3,}\s*$/) &&
+      !isTableStart(lines, i)
     ) {
-      paraLines.push(lines[i]);
+      // Drop leading spaces: the model often indents continuation lines,
+      // which pre-wrap would otherwise render as ragged indents.
+      paraLines.push(lines[i].trimStart());
       i++;
     }
     if (paraLines.length > 0) {
@@ -216,6 +351,54 @@ function Block({
             </li>
           ))}
         </Tag>
+      );
+    }
+
+    case "table": {
+      const align = block.align;
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-left font-sans text-[13px] leading-snug">
+            <thead>
+              <tr>
+                {block.header.map((cell, j) => (
+                  <th
+                    key={j}
+                    style={{ textAlign: align[j] ?? "left" }}
+                    className="border-b border-[var(--vc-border)] px-2 py-1.5 font-semibold text-[var(--vc-fg)]"
+                  >
+                    <InlineContent
+                      text={cell}
+                      highlightTerms={highlightTerms}
+                    />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, r) => (
+                <tr
+                  key={r}
+                  className="border-b border-[var(--vc-border)]/50 last:border-b-0"
+                >
+                  {row.map((cell, j) => (
+                    <td
+                      key={j}
+                      style={{ textAlign: align[j] ?? "left" }}
+                      className="px-2 py-1.5 align-top text-[var(--vc-fg)]"
+                    >
+                      <InlineContent
+                        text={cell}
+                        highlightTerms={highlightTerms}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {caret}
+        </div>
       );
     }
 

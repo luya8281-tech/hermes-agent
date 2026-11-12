@@ -1929,6 +1929,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               scopedProfile={scopedProfile}
               resumeSessionId={resumeParam}
               onNewChat={startFreshDashboardChat}
+              onOpenModelTools={() => setMobilePanelOpenRaw(true)}
               onSessionChange={(sessionId) => {
                 const next = new URLSearchParams(searchParams);
                 if (next.get("resume") === sessionId) return;

@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   Paperclip,
   X,
+  PanelRight,
 } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -66,6 +67,7 @@ export interface VisualChatViewProps {
   onSessionChange?: (sessionId: string) => void;
   onNewChat?: () => void;
   onSwitchToTerminal?: () => void;
+  onOpenModelTools?: () => void;
 }
 
 interface HistoryRow {
@@ -398,6 +400,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
   onSessionChange,
   onNewChat,
   onSwitchToTerminal,
+  onOpenModelTools,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -1160,7 +1163,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
 
   return (
     <div className="veechat flex h-full w-full flex-col overflow-hidden bg-[var(--vc-bg)]">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--vc-border)] px-3 py-2 sm:px-5">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--vc-border)] px-3 py-1.5 sm:px-5 sm:py-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <span
             className={`h-2 w-2 shrink-0 rounded-full ${
@@ -1173,7 +1176,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
             <div className="truncate font-sans text-[12.5px] font-medium text-[var(--vc-fg)]">
               {title || (resumeSessionId ? "Percakapan" : "Sesi Baru")}
             </div>
-            <div className="flex items-center gap-1.5 font-sans text-[10px] text-[var(--vc-muted-fg)]">
+            <div className="hidden items-center gap-1.5 font-sans text-[10px] text-[var(--vc-muted-fg)] sm:flex">
               <span className="inline-flex items-center gap-1">
                 <Cpu className="h-2.5 w-2.5" />
                 {sessionShort(model)}
@@ -1191,6 +1194,17 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {onOpenModelTools && (
+            <button
+              type="button"
+              onClick={onOpenModelTools}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)] text-[var(--vc-fg)] transition-colors hover:bg-[var(--vc-secondary)] sm:hidden"
+              title="Model & tools"
+              aria-label="Model & tools"
+            >
+              <PanelRight className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             type="button"
             onClick={handleNewChat}
