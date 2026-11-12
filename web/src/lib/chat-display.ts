@@ -136,6 +136,43 @@ export function formatToolOutput(result: unknown): string {
   }
 }
 
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "avif", "bmp"];
+
+function stripFencedCode(text: string): string {
+  return (text || "").replace(/```[\s\S]*?```/g, "");
+}
+
+/** Absolute image file paths mentioned outside code blocks, deduped. */
+export function extractImagePaths(text: string, limit = 4): string[] {
+  const clean = stripFencedCode(text).slice(0, 30000);
+  const ext = IMAGE_EXTENSIONS.join("|");
+  const re = new RegExp(
+    `(?:^|[\\s("'\`<])((?:/[\\w.@%+~=-]+)+\\.(?:${ext}))\\b`,
+    "gi",
+  );
+  const seen = new Set<string>();
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(clean)) !== null && out.length < limit) {
+    const p = m[1];
+    if (!seen.has(p)) {
+      seen.add(p);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/** Sources already embedded via markdown image syntax, so the auto-detected
+ *  row below a message never duplicates an inline markdown image. */
+export function extractMarkdownImageSources(text: string): string[] {
+  const out: string[] = [];
+  const re = /!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text || "")) !== null) out.push(m[1].trim());
+  return out;
+}
+
 export function isToolResultError(result: unknown): boolean {
   if (!result || typeof result !== "object") return false;
   const record = result as Record<string, unknown>;

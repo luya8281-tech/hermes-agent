@@ -28,7 +28,7 @@ export const ChatThinkingCard: React.FC<ChatThinkingCardProps> = ({
   const liveTail = isLive ? text.replace(/\s+/g, " ").slice(-90) : "";
 
   return (
-    <div className="my-0.5 w-fit max-w-full font-sans">
+    <div className="my-0.5 w-full font-sans">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -69,7 +69,7 @@ export const ChatThinkingCard: React.FC<ChatThinkingCardProps> = ({
       {open && (
         <div
           ref={panelRef}
-          className="max-h-48 w-[min(88vw,28rem)] select-text overflow-y-auto whitespace-pre-wrap break-words border-t border-[var(--vc-border)]/60 bg-[#151514]/70 px-2.5 py-2 font-mono text-[10.5px] leading-relaxed text-[var(--vc-muted-fg)]"
+          className="max-h-48 w-full select-text overflow-y-auto whitespace-pre-wrap break-words py-1.5 pl-7 pr-1 font-mono text-[10.5px] leading-relaxed text-[var(--vc-muted-fg)]"
         >
           {text}
         </div>

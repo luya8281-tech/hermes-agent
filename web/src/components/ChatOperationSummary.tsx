@@ -25,19 +25,19 @@ export const ChatOperationSummary: React.FC<ChatOperationSummaryProps> = ({
   if (actions.length === 0 && !reasoning) return null;
 
   return (
-    <div className="my-1.5 w-full font-sans">
+    <div className="my-1 w-full font-sans">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="inline-flex items-center gap-2 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)]/70 px-2.5 py-1.5 text-[11px] transition-colors hover:border-[rgb(204_120_92_/_0.5)]"
+        className="inline-flex items-center gap-1.5 px-1 py-1 text-[11px] text-[var(--vc-muted-fg)] transition-colors hover:text-[var(--vc-fg)]"
       >
         {hasError ? (
           <XCircle className="w-3.5 h-3.5 shrink-0 text-red-500" />
         ) : (
           <Check className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
         )}
-        <span className="font-medium text-[var(--vc-fg)]">
+        <span className="font-medium">
           {actions.length} operasi
         </span>
         {total > 0 && (
@@ -53,7 +53,7 @@ export const ChatOperationSummary: React.FC<ChatOperationSummaryProps> = ({
       </button>
 
       {open && (
-        <div className="mt-1 space-y-1 rounded-lg border border-[var(--vc-border)]/70 bg-[#151514]/40 p-1.5">
+        <div className="mt-0.5 space-y-0.5 pl-1">
           {reasoning && <ChatThinkingCard reasoning={reasoning} />}
           {actions.map((action) => (
             <LiveActionCard key={action.id} action={action} />

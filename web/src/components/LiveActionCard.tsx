@@ -121,7 +121,7 @@ export const LiveActionCard: React.FC<{ action: ActionInfo }> = ({ action }) => 
   };
 
   return (
-    <div className="my-0.5 w-full max-w-2xl font-sans">
+    <div className="my-0.5 w-full font-sans">
       <button
         type="button"
         onClick={() => setIsOpen((value) => !value)}
@@ -165,7 +165,7 @@ export const LiveActionCard: React.FC<{ action: ActionInfo }> = ({ action }) => 
           )}
 
           {tail && (
-            <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-[var(--vc-border)]/70 bg-[#151514] px-2 py-1.5 font-mono text-[10.5px] leading-snug text-[var(--vc-muted-fg)]">
+            <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap break-words border-l-2 border-[var(--vc-border)] py-0.5 pl-3 font-mono text-[10.5px] leading-snug text-[var(--vc-muted-fg)]">
               {tail}
             </pre>
           )}
@@ -177,7 +177,7 @@ export const LiveActionCard: React.FC<{ action: ActionInfo }> = ({ action }) => 
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(event) => event.stopPropagation()}
-                className="inline-flex items-center gap-1 rounded border border-[var(--vc-border)] bg-[var(--vc-secondary)]/70 px-2 py-0.5 text-[10px] font-medium text-[var(--vc-fg)] transition-colors hover:bg-[#2b2b27]"
+                className="inline-flex items-center gap-1 px-1 py-0.5 text-[10px] font-medium text-[var(--vc-muted-fg)] transition-colors hover:text-[var(--vc-fg)]"
               >
                 <ExternalLink className="w-3 h-3" />
                 <span>Buka</span>
@@ -191,7 +191,7 @@ export const LiveActionCard: React.FC<{ action: ActionInfo }> = ({ action }) => 
                   event.stopPropagation();
                   setLogOpen((value) => !value);
                 }}
-                className="inline-flex items-center gap-1 rounded border border-[var(--vc-border)] bg-[var(--vc-secondary)]/70 px-2 py-0.5 text-[10px] font-medium text-[var(--vc-muted-fg)] transition-colors hover:bg-[#2b2b27] hover:text-[var(--vc-fg)]"
+                className="inline-flex items-center gap-1 px-1 py-0.5 text-[10px] font-medium text-[var(--vc-muted-fg)] transition-colors hover:text-[var(--vc-fg)]"
               >
                 {logOpen ? "Tutup log" : "Log penuh"}
                 <span className="text-[9px] opacity-70">{lineCount}</span>
@@ -202,7 +202,7 @@ export const LiveActionCard: React.FC<{ action: ActionInfo }> = ({ action }) => 
               <button
                 type="button"
                 onClick={handleCopy}
-                className="inline-flex items-center gap-1 rounded border border-[var(--vc-border)] bg-[var(--vc-secondary)]/70 px-2 py-0.5 text-[10px] font-medium text-[var(--vc-muted-fg)] transition-colors hover:bg-[#2b2b27] hover:text-[var(--vc-fg)]"
+                className="inline-flex items-center gap-1 px-1 py-0.5 text-[10px] font-medium text-[var(--vc-muted-fg)] transition-colors hover:text-[var(--vc-fg)]"
               >
                 {copied ? (
                   <Check className="w-3 h-3 text-[var(--vc-primary)]" />
@@ -215,8 +215,8 @@ export const LiveActionCard: React.FC<{ action: ActionInfo }> = ({ action }) => 
           </div>
 
           {logOpen && fullText && (
-            <div className="overflow-hidden rounded-md border border-[var(--vc-border)] bg-[#141413]">
-              <div className="flex items-center justify-between border-b border-[var(--vc-border)]/70 bg-[var(--vc-secondary)]/40 px-2 py-1 font-mono text-[10px] text-[var(--vc-muted-fg)]">
+            <div className="overflow-hidden border-l-2 border-[var(--vc-border)] pl-3">
+              <div className="flex items-center justify-between py-1 font-mono text-[10px] text-[var(--vc-muted-fg)]">
                 <span>{lineCount} baris</span>
                 <button
                   type="button"
@@ -231,7 +231,7 @@ export const LiveActionCard: React.FC<{ action: ActionInfo }> = ({ action }) => 
                   <span>{copied ? "Tersalin" : "Salin"}</span>
                 </button>
               </div>
-              <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-[10.5px] leading-relaxed text-[var(--vc-muted-fg)]">
+              <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words py-1 font-mono text-[10.5px] leading-relaxed text-[var(--vc-muted-fg)]">
                 {fullText}
               </pre>
             </div>

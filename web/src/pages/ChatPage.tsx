@@ -1912,12 +1912,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         <div
           ref={termWrapRef}
           className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            viewMode === "visual" ? "p-0" : "p-2 sm:p-3",
+            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+            viewMode === "visual" ? "rounded-none p-0" : "rounded-lg p-2 sm:p-3",
           )}
           style={{
             backgroundColor: viewMode === "visual" ? "#111110" : terminalBg,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+            boxShadow:
+              viewMode === "visual"
+                ? "none"
+                : "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
           {viewMode === "visual" ? (

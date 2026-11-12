@@ -26,6 +26,8 @@ import { api } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
+  extractImagePaths,
+  extractMarkdownImageSources,
   formatDuration,
   formatToolOutput,
   formatToolSubject,
@@ -34,6 +36,7 @@ import {
 import { ChatOperationSummary } from "./ChatOperationSummary";
 import { ChatThinkingCard } from "./ChatThinkingCard";
 import { LiveActionCard, VeeSpinner, type ActionInfo } from "./LiveActionCard";
+import { ManagedImage } from "./ManagedImage";
 import { Markdown } from "./Markdown";
 
 export interface ChatMessage {
@@ -209,9 +212,9 @@ const CopyMessageButton: React.FC<{ text: string }> = ({ text }) => {
 };
 
 const UserMessage: React.FC<{ message: ChatMessage }> = ({ message }) => (
-  <div className="vc-msg flex w-full justify-center px-3 py-2.5 transition-colors sm:px-6">
-    <div className="flex w-full max-w-3xl flex-col items-end">
-      <div className="max-w-[85%] rounded-2xl border border-[var(--vc-border)] bg-[var(--vc-secondary)] px-3.5 py-2 text-left font-sans text-[14px] leading-snug text-[var(--vc-fg)] sm:max-w-xl">
+  <div className="vc-msg flex w-full justify-center px-2 py-2.5 transition-colors sm:px-4">
+    <div className="flex w-full max-w-4xl flex-col items-end">
+      <div className="max-w-[85%] rounded-2xl border border-[var(--vc-border)] bg-[var(--vc-secondary)] px-3.5 py-2 text-left font-sans text-[14px] leading-snug text-[var(--vc-fg)] sm:max-w-2xl">
         <span className="whitespace-pre-wrap break-words">{message.content}</span>
       </div>
       <div className="vc-msg-toolbar mt-1 flex items-center justify-end pr-0.5">
@@ -228,10 +231,25 @@ const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
   const hasActions = Boolean(message.actions && message.actions.length > 0);
   const reasoning = message.reasoning || "";
   const showStandaloneThinking = Boolean(reasoning) && (isLive || !hasActions);
+  // Photos the turn produced (screenshots, generated images): image paths
+  // mentioned in the prose or tool outputs render inline, unless already
+  // embedded via markdown image syntax.
+  const attachedImages = useMemo(() => {
+    const embedded = new Set(
+      extractMarkdownImageSources(message.content || ""),
+    );
+    const haystack = [
+      message.content || "",
+      ...(message.actions || []).map(
+        (a) => `${a.output || ""}\n${a.details || ""}`,
+      ),
+    ].join("\n");
+    return extractImagePaths(haystack).filter((p) => !embedded.has(p));
+  }, [message.content, message.actions]);
 
   return (
-    <div className="vc-msg flex w-full justify-center px-3 py-2.5 transition-colors sm:px-6">
-      <div className="flex w-full max-w-3xl flex-col items-start">
+    <div className="vc-msg flex w-full justify-center px-2 py-2.5 transition-colors sm:px-4">
+      <div className="flex w-full max-w-4xl flex-col items-start">
         <div className="w-full text-left">
           {showStandaloneThinking && (
             <ChatThinkingCard reasoning={reasoning} isLive={isLive} />
@@ -254,6 +272,18 @@ const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
           {message.content && (
             <div className="vc-prose mt-1 w-full break-words">
               <Markdown content={message.content} streaming={message.isStreaming} />
+            </div>
+          )}
+
+          {attachedImages.length > 0 && (
+            <div className="mt-1 w-full space-y-1">
+              {attachedImages.map((src) => (
+                <ManagedImage
+                  key={src}
+                  src={src}
+                  alt={src.split("/").pop() || "Gambar"}
+                />
+              ))}
             </div>
           )}
 
@@ -1108,7 +1138,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
               )}
             </div>
           ) : messages.length === 0 ? (
-            <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col justify-center px-4 py-8 font-sans sm:px-6">
+            <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-4 py-8 font-sans sm:px-6">
               <div className="space-y-2.5 pb-4 text-left">
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                   <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)] px-2.5 py-1 font-medium text-[var(--vc-fg)]">
@@ -1190,8 +1220,8 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
         )}
       </div>
 
-      <div className="shrink-0 px-3 pb-3 pt-1 sm:px-6">
-        <div className="mx-auto w-full max-w-3xl">
+      <div className="shrink-0 px-2 pb-3 pt-1 sm:px-4">
+        <div className="mx-auto w-full max-w-4xl">
           <form
             className="vc-composer rounded-2xl"
             onSubmit={(event) => {

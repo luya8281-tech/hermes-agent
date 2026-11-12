@@ -1,5 +1,7 @@
 import { useMemo, type ReactNode } from "react";
 
+import { ManagedImage } from "./ManagedImage";
+
 /**
  * Lightweight markdown renderer for LLM output.
  * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
@@ -237,13 +239,14 @@ type InlineNode =
   | { type: "bold"; content: string }
   | { type: "italic"; content: string }
   | { type: "link"; text: string; href: string }
+  | { type: "image"; alt: string; src: string }
   | { type: "br" };
 
 function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = [];
-  // Pattern priority: code > link > bold > italic > bare URL > line break
+  // Pattern priority: image > code > link > bold > italic > bare URL > line break
   const pattern =
-    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/g;
+    /(!\[([^\]]*)\]\(([^)]+)\))|(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -253,21 +256,24 @@ function parseInline(text: string): InlineNode[] {
     }
 
     if (match[1]) {
+      // ![alt](src) image — rendered inline, never as raw text
+      nodes.push({ type: "image", alt: match[2], src: match[3] });
+    } else if (match[4]) {
       // Inline code
-      nodes.push({ type: "code", content: match[1].slice(1, -1) });
-    } else if (match[2]) {
-      // [text](url) link
-      nodes.push({ type: "link", text: match[3], href: match[4] });
+      nodes.push({ type: "code", content: match[4].slice(1, -1) });
     } else if (match[5]) {
+      // [text](url) link
+      nodes.push({ type: "link", text: match[6], href: match[7] });
+    } else if (match[8]) {
       // **bold**
-      nodes.push({ type: "bold", content: match[6] });
-    } else if (match[7]) {
-      // *italic*
-      nodes.push({ type: "italic", content: match[8] });
-    } else if (match[9]) {
-      // Bare URL
-      nodes.push({ type: "link", text: match[9], href: match[9] });
+      nodes.push({ type: "bold", content: match[9] });
     } else if (match[10]) {
+      // *italic*
+      nodes.push({ type: "italic", content: match[11] });
+    } else if (match[12]) {
+      // Bare URL
+      nodes.push({ type: "link", text: match[12], href: match[12] });
+    } else if (match[13]) {
       // Line break within paragraph
       nodes.push({ type: "br" });
     }
@@ -311,6 +317,10 @@ function InlineContent({
               >
                 {node.content}
               </code>
+            );
+          case "image":
+            return (
+              <ManagedImage key={i} src={node.src} alt={node.alt} explicit />
             );
           case "bold":
             return (
