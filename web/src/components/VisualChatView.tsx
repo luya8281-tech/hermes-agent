@@ -53,16 +53,37 @@ import {
 import { ManagedImage } from "./ManagedImage";
 import { Markdown } from "./Markdown";
 
+export type ChatSegment =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "action"; actionId: string };
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   reasoning?: string;
   actions?: ActionInfo[];
+  segments?: ChatSegment[];
   isStreaming?: boolean;
   startedAt?: number;
   latencyMs?: number;
   error?: string;
+}
+
+function appendTextSegment(
+  segments: ChatSegment[] | undefined,
+  kind: "text" | "thinking",
+  delta: string,
+): ChatSegment[] {
+  const list = segments ? [...segments] : [];
+  const last = list[list.length - 1];
+  if (last && last.kind === kind) {
+    list[list.length - 1] = { kind, text: `${last.text}${delta}` };
+  } else {
+    list.push({ kind, text: delta });
+  }
+  return list;
 }
 
 export interface VisualChatViewProps {
@@ -300,18 +321,75 @@ const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
     <div className="vc-msg flex w-full justify-center px-2 py-2.5 transition-colors sm:px-4">
       <div className="flex w-full max-w-4xl flex-col items-start">
         <div className="w-full text-left">
-          {!isLive && hasTrace && (
-            <ChatOperationSummary
-              actions={message.actions || []}
-              reasoning={reasoning || undefined}
-            />
+          {!isLive && (
+            <>
+              {hasTrace && (
+                <ChatOperationSummary
+                  actions={message.actions || []}
+                  reasoning={reasoning || undefined}
+                />
+              )}
+              {message.content && (
+                <div className="vc-prose mt-1 w-full break-words">
+                  <Markdown content={message.content} streaming={false} />
+                </div>
+              )}
+            </>
           )}
 
-          {message.content && (
-            <div className="vc-prose mt-1 w-full break-words">
-              <Markdown content={message.content} streaming={message.isStreaming} />
-            </div>
-          )}
+          {isLive &&
+            (message.segments && message.segments.length > 0 ? (
+              <div className="w-full space-y-1">
+                {message.segments.map((seg, idx) => {
+                  const isLastSeg = idx === message.segments!.length - 1;
+                  if (seg.kind === "text") {
+                    return (
+                      <div key={`t_${idx}`} className="vc-prose w-full break-words">
+                        <Markdown
+                          content={seg.text}
+                          streaming={Boolean(message.isStreaming && isLastSeg)}
+                        />
+                      </div>
+                    );
+                  }
+                  if (seg.kind === "thinking") {
+                    return (
+                      <ChatThinkingCard
+                        key={`th_${idx}`}
+                        reasoning={seg.text}
+                        isLive={isLastSeg}
+                      />
+                    );
+                  }
+                  const action = (message.actions || []).find(
+                    (a) => a.id === seg.actionId,
+                  );
+                  if (!action) return null;
+                  return <LiveActionCard key={action.id} action={action} />;
+                })}
+              </div>
+            ) : (
+              <>
+                {message.content && (
+                  <div className="vc-prose mt-1 w-full break-words">
+                    <Markdown
+                      content={message.content}
+                      streaming={message.isStreaming}
+                    />
+                  </div>
+                )}
+                {hasActions && (
+                  <div className="mt-1 w-full space-y-0.5">
+                    {message.actions!.map((action) => (
+                      <LiveActionCard key={action.id} action={action} />
+                    ))}
+                  </div>
+                )}
+                {reasoning.trim() && (
+                  <ChatThinkingCard reasoning={reasoning} isLive />
+                )}
+              </>
+            ))}
 
           {attachedImages.length > 0 && (
             <div className="mt-1 w-full space-y-1">
@@ -323,21 +401,6 @@ const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
                 />
               ))}
             </div>
-          )}
-
-          {isLive && (
-            <>
-              {hasActions && (
-                <div className="mt-1 w-full space-y-0.5">
-                  {message.actions!.map((action) => (
-                    <LiveActionCard key={action.id} action={action} />
-                  ))}
-                </div>
-              )}
-              {reasoning.trim() && (
-                <ChatThinkingCard reasoning={reasoning} isLive />
-              )}
-            </>
           )}
 
           {isLive &&
@@ -635,6 +698,8 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
       const now = Date.now();
       const assistantId = `asst_${now}_${Math.random().toString(36).slice(2, 7)}`;
       assistantIdRef.current = assistantId;
+      stickToBottomRef.current = true;
+      setShowJump(false);
 
       setMessages((previous) => [
         // A new turn settles every earlier response: no spinner/shimmer from
@@ -661,6 +726,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
           content: "",
           reasoning: "",
           actions: [],
+          segments: [],
           isStreaming: true,
           startedAt: now,
         },
@@ -721,6 +787,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
         updateAssistant((message) => ({
           ...message,
           reasoning: `${message.reasoning || ""}${delta}`,
+          segments: appendTextSegment(message.segments, "thinking", delta),
           isStreaming: true,
         }));
         return;
@@ -732,7 +799,11 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
         updateAssistant((message) =>
           (message.reasoning || "").trim()
             ? message
-            : { ...message, reasoning: text },
+            : {
+                ...message,
+                reasoning: text,
+                segments: appendTextSegment(message.segments, "thinking", text),
+              },
         );
         return;
       }
@@ -752,6 +823,10 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
           ...message,
           isStreaming: true,
           actions: [...(message.actions || []), action],
+          segments: [
+            ...(message.segments || []),
+            { kind: "action", actionId: toolId },
+          ],
         }));
         return;
       }
@@ -773,6 +848,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
         updateAssistant((message) => {
           const actions = [...(message.actions || [])];
           const index = actions.findIndex((action) => action.id === toolId);
+          let resolvedId = toolId;
           if (index >= 0) {
             const current = actions[index];
             actions[index] = {
@@ -786,8 +862,9 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
                 (current.startedAt ? Date.now() - current.startedAt : undefined),
             };
           } else {
+            resolvedId = toolId || `tool_${Date.now()}`;
             actions.push({
-              id: toolId || `tool_${Date.now()}`,
+              id: resolvedId,
               type: "",
               label: name,
               subject,
@@ -797,7 +874,15 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
               durationMs,
             });
           }
-          return { ...message, actions };
+          const segments = message.segments ? [...message.segments] : [];
+          if (
+            !segments.some(
+              (seg) => seg.kind === "action" && seg.actionId === resolvedId,
+            )
+          ) {
+            segments.push({ kind: "action", actionId: resolvedId });
+          }
+          return { ...message, actions, segments };
         });
         return;
       }
@@ -808,6 +893,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
         updateAssistant((message) => ({
           ...message,
           content: `${message.content || ""}${delta}`,
+          segments: appendTextSegment(message.segments, "text", delta),
           isStreaming: true,
         }));
         return;

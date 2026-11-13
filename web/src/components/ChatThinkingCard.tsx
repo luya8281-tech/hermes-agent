@@ -13,7 +13,7 @@ export const ChatThinkingCard: React.FC<ChatThinkingCardProps> = ({
   reasoning,
   isLive = false,
 }) => {
-  const [open, setOpen] = useState(isLive);
+  const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const text = (reasoning || "").trim();
 
