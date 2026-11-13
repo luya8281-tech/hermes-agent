@@ -118,7 +118,7 @@ function isTableSeparator(line: string): boolean {
   if (!/^\s*\|?[\s:|-]+\|?\s*$/.test(line)) return false;
   return line
     .split("|")
-    .some((cell) => /^\s*:?-{2,}:\s*$/.test(cell));
+    .some((cell) => /^\s*:?-{2,}:?\s*$/.test(cell));
 }
 
 function splitTableRow(line: string): string[] {
