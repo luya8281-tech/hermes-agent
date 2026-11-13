@@ -447,7 +447,7 @@ jobs:
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
     # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
     # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
-    runs-on: ubuntu-latest
+    runs-on: instabox-medium
     needs: [mode, publish]
     timeout-minutes: 10
     environment: container-publish
@@ -635,7 +635,7 @@ jobs:
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
     # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
     # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
-    runs-on: ubuntu-latest
+    runs-on: instabox-medium
     outputs:
       digest: ${{ steps.list.outputs.digest }}
     timeout-minutes: 15
