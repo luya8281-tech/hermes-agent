@@ -32,6 +32,8 @@ export const ChatOperationSummary: React.FC<ChatOperationSummaryProps> = ({
 
   if (actions.length === 0 && !reasoning) return null;
 
+  const operationCount = Math.max(1, settledActions.length);
+
   return (
     <div className="my-1 w-full font-sans">
       <button
@@ -46,7 +48,7 @@ export const ChatOperationSummary: React.FC<ChatOperationSummaryProps> = ({
           <Check className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
         )}
         <span className="font-medium">
-          {settledActions.length} operasi
+          {operationCount} operasi
         </span>
         {total > 0 && (
           <span className="font-mono text-[10px] tabular-nums text-[var(--vc-muted-fg)]">

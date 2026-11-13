@@ -17,10 +17,8 @@ import {
   Square,
   Terminal as TerminalIcon,
   Wrench,
-  Globe,
-  FolderSearch,
-  ShieldCheck,
-  Paperclip,
+  ImagePlus,
+  FolderOpen,
   X,
   PanelRight,
   FileText,
@@ -30,7 +28,7 @@ import { api } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
-  ATTACH_ACCEPT,
+  DOC_ACCEPT,
   extractImagePaths,
   extractMarkdownImageSources,
   fileExtension,
@@ -281,7 +279,7 @@ const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
 }) => {
   const hasActions = Boolean(message.actions && message.actions.length > 0);
   const reasoning = message.reasoning || "";
-  const showStandaloneThinking = Boolean(reasoning) && (isLive || !hasActions);
+  const hasTrace = hasActions || Boolean(reasoning.trim());
   // Photos the turn produced (screenshots, generated images): image paths
   // mentioned in the prose or tool outputs render inline, unless already
   // embedded via markdown image syntax.
@@ -302,23 +300,12 @@ const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
     <div className="vc-msg flex w-full justify-center px-2 py-2.5 transition-colors sm:px-4">
       <div className="flex w-full max-w-4xl flex-col items-start">
         <div className="w-full text-left">
-          {showStandaloneThinking && (
-            <ChatThinkingCard reasoning={reasoning} isLive={isLive} />
+          {!isLive && hasTrace && (
+            <ChatOperationSummary
+              actions={message.actions || []}
+              reasoning={reasoning || undefined}
+            />
           )}
-
-          {hasActions &&
-            (isLive ? (
-              <div className="my-0.5 w-full space-y-0.5">
-                {message.actions!.map((action) => (
-                  <LiveActionCard key={action.id} action={action} />
-                ))}
-              </div>
-            ) : (
-              <ChatOperationSummary
-                actions={message.actions!}
-                reasoning={reasoning || undefined}
-              />
-            ))}
 
           {message.content && (
             <div className="vc-prose mt-1 w-full break-words">
@@ -336,6 +323,21 @@ const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
                 />
               ))}
             </div>
+          )}
+
+          {isLive && (
+            <>
+              {hasActions && (
+                <div className="mt-1 w-full space-y-0.5">
+                  {message.actions!.map((action) => (
+                    <LiveActionCard key={action.id} action={action} />
+                  ))}
+                </div>
+              )}
+              {reasoning.trim() && (
+                <ChatThinkingCard reasoning={reasoning} isLive />
+              )}
+            </>
           )}
 
           {isLive &&
@@ -371,39 +373,8 @@ const AssistantMessage: React.FC<{ message: ChatMessage; isLive: boolean }> = ({
   );
 };
 
-const WORKFLOWS = [
-  {
-    icon: TerminalIcon,
-    label: "Kesehatan Server & Layanan",
-    sub: "RAM · disk · proses",
-    prompt:
-      "Periksa kesehatan server ini: status layanan yang berjalan, penggunaan RAM dan disk, serta proses yang paling banyak memakai resource. Ringkas temuan penting dan rekomendasi tindakannya.",
-  },
-  {
-    icon: Globe,
-    label: "Riset Berita & Web Terkini",
-    sub: "multi-sumber + ringkasan",
-    prompt:
-      "Cari berita teknologi dan AI terbaru hari ini dari beberapa sumber terpercaya, lalu rangkum 5 poin utama beserta tautan sumbernya.",
-  },
-  {
-    icon: FolderSearch,
-    label: "Audit Repositori Aktif",
-    sub: "struktur · dependensi · risiko",
-    prompt:
-      "Periksa repositori yang sedang aktif: jelaskan struktur proyek, dependensi utama, dan potensi bug atau masalah keamanan yang perlu diperhatikan.",
-  },
-  {
-    icon: Sparkles,
-    label: "Otomatisasi Browser",
-    sub: "buka halaman + screenshot",
-    prompt:
-      "Buka https://example.com menggunakan browser, ambil screenshot halaman, lalu jelaskan isi dan struktur halamannya.",
-  },
-];
-
 function sessionShort(model: string): string {
-  if (!model) return "Hermes Agent";
+  if (!model) return "Auto";
   return model.length > 34 ? `${model.slice(0, 31)}…` : model;
 }
 
@@ -490,6 +461,7 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -1244,18 +1216,6 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
     beginSession(loadedResumeRef.current ?? null);
   }, [beginSession]);
 
-  const handleQuickWorkflow = useCallback(
-    (prompt: string) => {
-      setInput("");
-      if (!sessionReadyRef.current || !liveSessionIdRef.current) {
-        pendingPromptRef.current = prompt;
-        return;
-      }
-      submitPrompt(prompt);
-    },
-    [submitPrompt],
-  );
-
   const handleComposerKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.key === "Enter" && !event.shiftKey) {
@@ -1280,17 +1240,12 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
     submitPrompt(queued);
   }, [sessionReady, submitPrompt]);
 
-  const userCount = useMemo(
-    () => messages.filter((message) => message.role === "user").length,
-    [messages],
-  );
-
   const loading = !sessionReady && messages.length === 0;
   const lastMessageIndex = messages.length - 1;
 
   return (
     <div className="veechat flex h-full w-full flex-col overflow-hidden bg-[var(--vc-bg)]">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--vc-border)] px-3 py-1.5 sm:px-5 sm:py-2">
+      <header className="flex shrink-0 items-center justify-between gap-3 py-2 pl-12 pr-3 lg:px-5">
         <div className="flex min-w-0 items-center gap-2.5">
           <span
             className={`h-2 w-2 shrink-0 rounded-full ${
@@ -1394,54 +1349,10 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
               )}
             </div>
           ) : messages.length === 0 ? (
-            <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-4 py-8 font-sans sm:px-6">
-              <div className="space-y-2.5 pb-4 text-left">
-                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                  <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)] px-2.5 py-1 font-medium text-[var(--vc-fg)]">
-                    <Cpu className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
-                    {sessionShort(model)}
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)] px-2.5 py-1 font-medium text-[var(--vc-fg)]">
-                    <ShieldCheck className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
-                    Tool aktif
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--vc-border)] bg-[var(--vc-card)] px-2.5 py-1 font-medium text-[var(--vc-fg)]">
-                    <Sparkles className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
-                    Visual mode
-                  </span>
-                </div>
-
-                <h2 className="vc-serif pt-1 text-xl font-semibold tracking-tight text-[var(--vc-fg)] sm:text-2xl">
-                  Ruang Kerja Teknis &amp; Otomasi
-                </h2>
-                <p className="max-w-xl text-[11.5px] leading-relaxed text-[var(--vc-muted-fg)]">
-                  Pilih alur cepat di bawah atau tulis instruksi langsung. Hermes akan
-                  menampilkan pemikiran, aksi tool, dan hasilnya secara real-time.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                {WORKFLOWS.map((item) => (
-                  <button
-                    key={item.label}
-                    type="button"
-                    onClick={() => handleQuickWorkflow(item.prompt)}
-                    className="group flex items-center gap-3 rounded-xl border border-[var(--vc-border)] bg-[var(--vc-card)]/80 p-3 text-left transition-colors hover:border-[rgb(204_120_92_/_0.5)] hover:bg-[var(--vc-secondary)]/50"
-                  >
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[rgb(204_120_92_/_0.2)] bg-[rgb(204_120_92_/_0.1)] text-[var(--vc-primary)]">
-                      <item.icon className="h-4 w-4" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-semibold text-[var(--vc-fg)] transition-colors group-hover:text-[var(--vc-primary)]">
-                        {item.label}
-                      </div>
-                      <div className="truncate font-mono text-[10.5px] text-[var(--vc-muted-fg)]">
-                        {item.sub}
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
+            <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col items-center justify-center px-4 py-8 text-center font-sans sm:px-6">
+              <h2 className="vc-serif text-xl font-normal tracking-tight text-[var(--vc-fg)]/85 sm:text-2xl">
+                Ada yang bisa dibantu?
+              </h2>
             </div>
           ) : (
             <div className="flex flex-col">
@@ -1600,9 +1511,22 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
             <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-0.5">
               <div className="flex min-w-0 items-center gap-1">
                 <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  onChange={(event) => {
+                    addAttachFiles(Array.from(event.target.files ?? []));
+                    event.target.value = "";
+                  }}
+                />
+                <input
                   ref={fileInputRef}
                   type="file"
-                  accept={ATTACH_ACCEPT}
+                  accept={DOC_ACCEPT}
                   multiple
                   className="hidden"
                   aria-hidden="true"
@@ -1614,33 +1538,34 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
                 />
                 <button
                   type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--vc-muted-fg)] transition-colors hover:bg-white/[0.05] hover:text-[var(--vc-fg)]"
+                  title="Lampirkan foto dari galeri"
+                  aria-label="Lampirkan foto dari galeri"
+                >
+                  <ImagePlus className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--vc-muted-fg)] transition-colors hover:bg-white/[0.05] hover:text-[var(--vc-fg)]"
-                  title="Lampirkan foto atau file"
-                  aria-label="Lampirkan foto atau file"
+                  title="Lampirkan berkas dari folder"
+                  aria-label="Lampirkan berkas dari folder"
                 >
-                  <Paperclip className="h-4 w-4" />
+                  <FolderOpen className="h-4 w-4" />
                 </button>
                 <span
                   className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 font-sans text-[11px] font-medium text-[var(--vc-muted-fg)]"
-                  title={model || "Hermes Agent"}
+                  title={model || "Model"}
                 >
                   <Cpu className="h-3.5 w-3.5 text-[var(--vc-primary)]" />
                   <span className="max-w-[10rem] truncate">
                     {sessionShort(model)}
                   </span>
                 </span>
-                {userCount > 0 && (
-                  <span className="hidden items-center gap-1 rounded-lg px-2 font-mono text-[10px] text-[var(--vc-muted-fg)]/70 sm:inline-flex">
-                    {userCount} giliran
-                  </span>
-                )}
               </div>
 
               <div className="flex shrink-0 items-center gap-1.5">
-                <span className="hidden font-sans text-[10px] text-[var(--vc-muted-fg)]/70 sm:inline">
-                  Enter kirim · Shift+Enter baris baru
-                </span>
                 {isGenerating ? (
                   <button
                     type="button"
@@ -1672,17 +1597,6 @@ export const VisualChatView: React.FC<VisualChatViewProps> = ({
               </div>
             </div>
           </form>
-
-          <div className="flex items-center justify-between px-1 pt-1.5 font-sans text-[10px] text-[var(--vc-muted-fg)]/70">
-            <span className="inline-flex items-center gap-1.5">
-              <Wrench className="h-3 w-3" />
-              Live action · tool timeline
-            </span>
-            <span>
-              {isConnected ? "Terhubung" : "Menyambungkan…"}
-              {sessionReady ? "" : " · memuat"}
-            </span>
-          </div>
         </div>
       </div>
     </div>

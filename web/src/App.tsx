@@ -532,36 +532,52 @@ export default function App() {
         <PluginSlot name="backdrop" />
       </div>
 
-      <header
-        className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
-          "flex items-center gap-2 px-4 py-2",
-          "border-b border-current/20",
-          "bg-background-base",
-        )}
-        style={{
-          background:
-            "var(--component-header-background, var(--background-base))",
-          borderImage: "var(--component-header-border-image)",
-          clipPath: "var(--component-header-clip-path)",
-        }}
-      >
-        <Button
-          ghost
-          size="icon"
-          onClick={() => setMobileOpen(true)}
-          aria-label={t.app.openNavigation}
-          aria-expanded={mobileOpen}
-          aria-controls="app-sidebar"
-          className="text-text-secondary hover:text-midground"
+      {isChatRoute ? (
+        <div className="lg:hidden fixed top-2 left-2.5 z-40">
+          <Button
+            ghost
+            size="icon"
+            onClick={() => setMobileOpen(true)}
+            aria-label={t.app.openNavigation}
+            aria-expanded={mobileOpen}
+            aria-controls="app-sidebar"
+            className="text-text-secondary hover:text-midground"
+          >
+            <Menu />
+          </Button>
+        </div>
+      ) : (
+        <header
+          className={cn(
+            "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
+            "flex items-center gap-2 px-4 py-2",
+            "border-b border-current/20",
+            "bg-background-base",
+          )}
+          style={{
+            background:
+              "var(--component-header-background, var(--background-base))",
+            borderImage: "var(--component-header-border-image)",
+            clipPath: "var(--component-header-clip-path)",
+          }}
         >
-          <Menu />
-        </Button>
+          <Button
+            ghost
+            size="icon"
+            onClick={() => setMobileOpen(true)}
+            aria-label={t.app.openNavigation}
+            aria-expanded={mobileOpen}
+            aria-controls="app-sidebar"
+            className="text-text-secondary hover:text-midground"
+          >
+            <Menu />
+          </Button>
 
-        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
-          {t.app.brand}
-        </Typography>
-      </header>
+          <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
+            {t.app.brand}
+          </Typography>
+        </header>
+      )}
 
       {mobileOpen && (
         <Button
@@ -579,7 +595,7 @@ export default function App() {
           fixed lg:hidden header is h-14/z-40; previously each banner carried
           its own mt-14 AND the content kept pt-14, so two visible banners
           stacked three offsets (NS-656 review P3). One spacer, applied once. */}
-      <div aria-hidden className="h-14 shrink-0 lg:hidden" />
+      {!isChatRoute && <div aria-hidden className="h-14 shrink-0 lg:hidden" />}
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
       <MemoryPressureBanner status={sidebarStatus} />
@@ -745,10 +761,7 @@ export default function App() {
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                isChatRoute ? "px-0 sm:px-6" : "px-3 sm:px-6",
-                isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6",
+                isChatRoute ? "px-0 py-0" : "px-3 sm:px-6 pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >

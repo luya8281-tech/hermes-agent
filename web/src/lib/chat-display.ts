@@ -202,6 +202,8 @@ export const DOC_EXTENSIONS = [
   "gz",
   "tar",
 ];
+/** accept= value for the document/file picker. */
+export const DOC_ACCEPT = DOC_EXTENSIONS.map((ext) => `.${ext}`).join(",");
 /** accept= value for the composer file picker: images + documents. */
 export const ATTACH_ACCEPT = [
   "image/*",

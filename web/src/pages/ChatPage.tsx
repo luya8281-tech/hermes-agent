@@ -1890,7 +1890,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
 
   return (
-    <div className="veechat flex min-h-0 flex-1 flex-col gap-2">
+    <div
+      className={cn(
+        "veechat flex min-h-0 flex-1 flex-col",
+        viewMode === "visual" ? "gap-0" : "gap-2",
+      )}
+    >
       <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
 
@@ -1908,7 +1913,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col lg:flex-row",
+          viewMode === "visual" ? "gap-0" : "gap-2 lg:gap-3",
+        )}
+      >
         <div
           ref={termWrapRef}
           className={cn(
